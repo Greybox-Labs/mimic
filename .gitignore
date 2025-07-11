@@ -1,0 +1,109 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+mimic
+mimic-*
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Go workspace file
+go.work
+
+# Dependency directories (remove the comment below to include it)
+vendor/
+
+# Go module download cache
+*.sum
+
+# SQLite database files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Log files
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+tmp/
+
+# Build artifacts
+build/
+dist/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS-specific files
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Environment files
+*.env
+
+# Test coverage
+coverage.out
+coverage.html
+
+# Profiling files
+*.prof
+*.pprof
+
+# Air (Go hot reload) files
+.air.toml
+tmp/
+
+# Delve debugger
+__debug_bin*
+
+# GoReleaser artifacts
+dist/
+*.tar.gz
+*.zip
+
+# Generated files
+*.pb.go
+*.pb.gw.go
+
+# Local development files
+*.local
+local/
+dev/
+
+# Documentation build files
+docs/_build/
+docs/site/
+
+# Export files (example/test exports)
+exports/
+*.json.gz
+test-exports/
+
+# Backup files
+*.bak
+*.backup
+
+# Personal notes
+notes.md
+TODO.md
+NOTES.md
