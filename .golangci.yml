@@ -1,0 +1,224 @@
+# golangci-lint configuration for mimic
+run:
+  timeout: 5m
+  tests: true
+  skip-dirs:
+    - build
+    - .git
+  skip-files:
+    - ".*_test.go"
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+    - gocritic
+    - gofmt
+    - goimports
+    - revive
+    - misspell
+    - unconvert
+    - unparam
+    - gosec
+    - bodyclose
+    - nilerr
+    - exportloopref
+    - goconst
+    - gomoddirectives
+    - gocyclo
+    - dupl
+    - funlen
+    - gocognit
+    - nestif
+    - whitespace
+    - wsl
+    - prealloc
+    - predeclared
+    - noctx
+    - nolintlint
+    - stylecheck
+    - tparallel
+    - thelper
+    - wastedassign
+    - nlreturn
+    - wrapcheck
+    - forcetypeassert
+    - containedctx
+    - contextcheck
+    - cyclop
+    - errorlint
+    - exhaustive
+    - exhaustivestruct
+    - forbidigo
+    - godot
+    - godox
+    - goerr113
+    - gomnd
+    - gomodguard
+    - goprintffuncname
+    - gosimple
+    - ifshort
+    - importas
+    - makezero
+    - nakedret
+    - nilnil
+    - paralleltest
+    - promlinter
+    - rowserrcheck
+    - sqlclosecheck
+    - testpackage
+    - tenv
+    - testifylint
+    - usestdlibvars
+    - varnamelen
+    - asciicheck
+    - bidichk
+    - decorder
+    - dogsled
+    - errname
+    - errorlint
+    - execinquery
+    - gci
+    - ginkgolinter
+    - gocheckcompilerdirectives
+    - gochecknoglobals
+    - gochecknoinits
+    - grouper
+    - importas
+    - interfacebloat
+    - ireturn
+    - lll
+    - loggercheck
+    - maintidx
+    - musttag
+    - nosprintfhostport
+    - perfsprint
+    - protogetter
+    - reassign
+    - revive
+    - sloglint
+    - tagalign
+    - tagliatelle
+    - zerologlint
+
+  disable:
+    - exhaustivestruct # too strict
+    - gochecknoglobals # we have some globals
+    - gochecknoinits # we have some init functions
+    - varnamelen # too strict for short variable names
+    - wrapcheck # too strict about error wrapping
+    - nlreturn # too strict about newlines
+    - wsl # too strict about whitespace
+    - testpackage # we want to test internal functions
+    - paralleltest # not all tests need to be parallel
+    - gocognit # similar to gocyclo
+    - funlen # some functions are necessarily long
+    - cyclop # similar to gocyclo
+    - gomnd # magic numbers are sometimes OK
+    - godox # TODO comments are OK during development
+    - forbidigo # too restrictive
+    - ireturn # interfaces are sometimes OK to return
+    - interfacebloat # some interfaces need many methods
+    - maintidx # maintenance index is too strict
+    - nestif # nested ifs are sometimes necessary
+    - gocyclo # cyclomatic complexity can be high for some functions
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+  
+  govet:
+    check-shadowing: true
+    settings:
+      printf:
+        funcs:
+          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Infof
+          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Warnf
+          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Errorf
+          - (github.com/golangci/golangci-lint/pkg/logutils.Log).Fatalf
+  
+  revive:
+    min-confidence: 0.8
+    rules:
+      - name: var-naming
+        disabled: false
+      - name: package-comments
+        disabled: true
+      - name: exported
+        disabled: false
+      - name: indent-error-flow
+        disabled: false
+      - name: if-return
+        disabled: false
+      - name: superfluous-else
+        disabled: false
+      - name: unused-parameter
+        disabled: false
+      - name: unreachable-code
+        disabled: false
+      - name: redefines-builtin-id
+        disabled: false
+  
+  gocyclo:
+    min-complexity: 15
+  
+  dupl:
+    threshold: 100
+  
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+  
+  lll:
+    line-length: 120
+  
+  misspell:
+    locale: US
+  
+  nolintlint:
+    allow-leading-space: true
+    allow-unused: false
+    require-explanation: false
+    require-specific: false
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - dupl
+        - gosec
+        - goconst
+    - path: cmd/
+      linters:
+        - lll
+    - path: main.go
+      linters:
+        - gochecknoinits
+  
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  new: false
+
+severity:
+  default-severity: error
+  rules:
+    - linters:
+        - dupl
+        - goconst
+        - gocritic
+        - gocyclo
+        - gosimple
+        - ineffassign
+        - misspell
+        - staticcheck
+        - typecheck
+        - unused
+        - govet
+        - errcheck
+      severity: error

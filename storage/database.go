@@ -309,6 +309,58 @@ func (d *Database) GetInteractionsBySession(sessionID int) ([]Interaction, error
 	return interactions, nil
 }
 
+func (d *Database) GetAllSessions() ([]Session, error) {
+	query := `
+		SELECT id, session_name, created_at, description
+		FROM sessions
+		ORDER BY created_at DESC`
+
+	rows, err := d.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get all sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []Session
+	for rows.Next() {
+		var session Session
+		err := rows.Scan(
+			&session.ID,
+			&session.SessionName,
+			&session.CreatedAt,
+			&session.Description,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan session: %w", err)
+		}
+		sessions = append(sessions, session)
+	}
+
+	return sessions, nil
+}
+
+func (d *Database) ClearAllSessions() error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Delete all interactions first (due to foreign key constraints)
+	_, err = tx.Exec("DELETE FROM interactions")
+	if err != nil {
+		return fmt.Errorf("failed to delete interactions: %w", err)
+	}
+
+	// Then delete all sessions
+	_, err = tx.Exec("DELETE FROM sessions")
+	if err != nil {
+		return fmt.Errorf("failed to delete sessions: %w", err)
+	}
+
+	return tx.Commit()
+}
+
 func (d *Database) ClearSession(sessionName string) error {
 	session, err := d.GetSession(sessionName)
 	if err != nil {

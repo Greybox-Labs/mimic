@@ -1,10 +1,14 @@
-proxy:
-  mode: "record" # record | mock
-  target_host: "api.example.com"
-  target_port: 443
+server:
   listen_host: "0.0.0.0"
   listen_port: 8080
-  protocol: "https"
+
+proxies:
+  anthropic:
+    mode: "mock"
+    target_host: "api.anthropic.com"
+    target_port: 443
+    protocol: "https"
+    session_name: "anthropic-test"
 
 database:
   path: "~/.mimic/recordings.db"
@@ -16,7 +20,7 @@ recording:
   capture_body: true
   redact_patterns:
     - "Authorization: Bearer .*"
-    - "X-API-Key: .*"
+    - "X-Api-Key: .*"
 
 mock:
   matching_strategy: "exact" # exact | pattern | fuzzy
