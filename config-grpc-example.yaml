@@ -1,0 +1,45 @@
+server:
+  listen_host: "0.0.0.0"
+  listen_port: 8080
+
+proxies:
+  grpc-example:
+    mode: "record"
+    protocol: "grpc"
+    target_host: "localhost"
+    target_port: 9090
+    session_name: "grpc-session"
+  
+  grpc-mock:
+    mode: "mock"
+    protocol: "grpc"
+    session_name: "grpc-session"
+
+database:
+  path: "~/.mimic/recordings.db"
+  connection_pool_size: 10
+
+recording:
+  session_name: "default"
+  capture_headers: true
+  capture_body: true
+  redact_patterns: []
+
+mock:
+  matching_strategy: "exact"
+  sequence_mode: "ordered"
+  not_found_response:
+    status: 404
+    body:
+      error: "Recording not found"
+
+grpc:
+  proto_paths:
+    - "./protos"
+    - "/usr/local/include"
+  reflection_enabled: true
+
+export:
+  format: "json"
+  pretty_print: true
+  compress: false

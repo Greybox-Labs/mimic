@@ -252,6 +252,8 @@ header p {
 .method-PUT { background: #e74c3c; }
 .method-DELETE { background: #8e44ad; }
 .method-PATCH { background: #16a085; }
+.method-/astria.sequencerblock.v1.SequencerService/GetUpgradesInfo,
+.method-grpc { background: #9b59b6; }
 
 .event-endpoint {
     font-family: 'Courier New', monospace;
@@ -276,6 +278,30 @@ header p {
 .status-3xx { background: #f39c12; }
 .status-4xx { background: #e74c3c; }
 .status-5xx { background: #8e44ad; }
+.status-pending { background: #95a5a6; }
+
+/* Mock badge styling */
+.mock-badge {
+    background: #e67e22;
+    color: white;
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-left: 8px;
+    font-weight: bold;
+    animation: pulse 2s infinite;
+}
+
+.mock-event {
+    border-left: 3px solid #e67e22;
+    background: rgba(230, 126, 34, 0.05);
+}
+
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.7; }
+    100% { opacity: 1; }
+}
 
 .event-meta {
     display: flex;

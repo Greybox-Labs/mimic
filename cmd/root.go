@@ -21,6 +21,7 @@ var (
 	outputFile    string
 	inputFile     string
 	mergeStrategy string
+	debugMode     bool
 )
 
 var rootCmd = &cobra.Command{
@@ -39,6 +40,7 @@ func Execute() error {
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is config.yaml)")
+	rootCmd.PersistentFlags().BoolVar(&debugMode, "debug", false, "enable debug logging")
 
 	rootCmd.AddCommand(exportCmd)
 	rootCmd.AddCommand(importCmd)
@@ -48,6 +50,12 @@ func init() {
 }
 
 func runProxy() {
+	// Set up debug logging if requested
+	if debugMode {
+		log.SetFlags(log.LstdFlags | log.Lshortfile)
+		log.Println("Debug mode enabled")
+	}
+
 	cfg, err := config.LoadConfig(cfgFile)
 	if err != nil {
 		log.Fatal("Failed to load config:", err)

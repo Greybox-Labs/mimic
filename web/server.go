@@ -15,12 +15,12 @@ import (
 )
 
 type Server struct {
-	config      *config.Config
-	database    *storage.Database
-	upgrader    websocket.Upgrader
-	clients     map[*websocket.Conn]bool
-	clientsMux  sync.RWMutex
-	broadcast   chan []byte
+	config     *config.Config
+	database   *storage.Database
+	upgrader   websocket.Upgrader
+	clients    map[*websocket.Conn]bool
+	clientsMux sync.RWMutex
+	broadcast  chan []byte
 }
 
 type Message struct {
@@ -30,15 +30,15 @@ type Message struct {
 }
 
 type RequestResponseEvent struct {
-	Type         string                 `json:"type"` // "request" or "response"
-	Method       string                 `json:"method"`
-	Endpoint     string                 `json:"endpoint"`
-	Headers      map[string]interface{} `json:"headers"`
-	Body         string                 `json:"body"`
-	Status       int                    `json:"status,omitempty"`
-	SessionName  string                 `json:"session_name"`
-	RemoteAddr   string                 `json:"remote_addr"`
-	RequestID    string                 `json:"request_id"`
+	Type        string                 `json:"type"` // "request" or "response"
+	Method      string                 `json:"method"`
+	Endpoint    string                 `json:"endpoint"`
+	Headers     map[string]interface{} `json:"headers"`
+	Body        string                 `json:"body"`
+	Status      int                    `json:"status,omitempty"`
+	SessionName string                 `json:"session_name"`
+	RemoteAddr  string                 `json:"remote_addr"`
+	RequestID   string                 `json:"request_id"`
 }
 
 func NewServer(cfg *config.Config, db *storage.Database) *Server {
@@ -61,22 +61,22 @@ func (s *Server) Start() error {
 
 	// Create a new HTTP multiplexer for the web server
 	mux := http.NewServeMux()
-	
+
 	// Static files
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static/"))))
-	
+
 	// Main page
 	mux.HandleFunc("/", s.handleHome)
-	
+
 	// WebSocket endpoint
 	mux.HandleFunc("/ws", s.handleWebSocket)
-	
+
 	// API endpoints
 	mux.HandleFunc("/api/sessions", s.handleSessions)
 	mux.HandleFunc("/api/sessions/", s.handleSessionDetail)
 	mux.HandleFunc("/api/interactions/", s.handleInteractions)
 	mux.HandleFunc("/api/clear", s.handleClear)
-	
+
 	address := fmt.Sprintf("%s:%d", s.config.Server.ListenHost, s.config.Server.ListenPort) // Use same port as server
 	log.Printf("Starting web UI on http://%s", address)
 	return http.ListenAndServe(address, mux)
@@ -86,22 +86,22 @@ func (s *Server) Start() error {
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Start the broadcast handler
 	go s.handleBroadcast()
-	
+
 	// Static files at /static/
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("web/static/"))))
-	
+
 	// Main page at /
 	mux.HandleFunc("/", s.handleHome)
-	
+
 	// WebSocket endpoint at /ws
 	mux.HandleFunc("/ws", s.handleWebSocket)
-	
+
 	// API endpoints at /api/
 	mux.HandleFunc("/api/sessions", s.handleSessions)
 	mux.HandleFunc("/api/sessions/", s.handleSessionDetail)
 	mux.HandleFunc("/api/interactions/", s.handleInteractions)
 	mux.HandleFunc("/api/clear", s.handleClear)
-	
+
 	log.Printf("Web UI registered at top level")
 }
 
@@ -185,7 +185,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
     <script src="/static/app.js"></script>
 </body>
 </html>`
-	
+
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(html))
 }

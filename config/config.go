@@ -9,13 +9,13 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig               `mapstructure:"server"`
-	Proxies   map[string]ProxyConfig     `mapstructure:"proxies"`
-	Database  DatabaseConfig             `mapstructure:"database"`
-	Recording RecordingConfig            `mapstructure:"recording"`
-	Mock      MockConfig                 `mapstructure:"mock"`
-	GRPC      GRPCConfig                 `mapstructure:"grpc"`
-	Export    ExportConfig               `mapstructure:"export"`
+	Server    ServerConfig           `mapstructure:"server"`
+	Proxies   map[string]ProxyConfig `mapstructure:"proxies"`
+	Database  DatabaseConfig         `mapstructure:"database"`
+	Recording RecordingConfig        `mapstructure:"recording"`
+	Mock      MockConfig             `mapstructure:"mock"`
+	GRPC      GRPCConfig             `mapstructure:"grpc"`
+	Export    ExportConfig           `mapstructure:"export"`
 }
 
 type ServerConfig struct {
@@ -57,6 +57,8 @@ type NotFoundResponseConfig struct {
 type GRPCConfig struct {
 	ProtoPaths        []string `mapstructure:"proto_paths"`
 	ReflectionEnabled bool     `mapstructure:"reflection_enabled"`
+	MaxMessageSize    int      `mapstructure:"max_message_size"`    // Max message size in bytes
+	MaxHeaderSize     int      `mapstructure:"max_header_size"`     // Max header list size in bytes
 }
 
 type ExportConfig struct {
@@ -133,6 +135,8 @@ func setDefaults() {
 	})
 
 	viper.SetDefault("grpc.reflection_enabled", true)
+	viper.SetDefault("grpc.max_message_size", 64*1024*1024) // 64MB
+	viper.SetDefault("grpc.max_header_size", 64*1024*1024)  // 64MB
 
 	viper.SetDefault("export.format", "json")
 	viper.SetDefault("export.pretty_print", true)
@@ -176,6 +180,8 @@ func getDefaultConfig() *Config {
 		GRPC: GRPCConfig{
 			ProtoPaths:        []string{},
 			ReflectionEnabled: true,
+			MaxMessageSize:    64 * 1024 * 1024, // 64MB
+			MaxHeaderSize:     64 * 1024 * 1024, // 64MB
 		},
 		Export: ExportConfig{
 			Format:      "json",

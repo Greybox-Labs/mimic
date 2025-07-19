@@ -18,8 +18,6 @@ var webCmd = &cobra.Command{
 	},
 }
 
-
-
 func runWebServer() {
 	cfg, err := config.LoadConfig(cfgFile)
 	if err != nil {

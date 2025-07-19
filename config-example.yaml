@@ -4,25 +4,21 @@ server:
 
 proxies:
   anthropic:
-    mode: "mock"
+    mode: "record"
     target_host: "api.anthropic.com"
     target_port: 443
     protocol: "https"
-    session_name: "anthropic-test"
-
-  astria-grpc:
-    mode: "mock"
-    protocol: "grpc"
-    target_host: "grpc.astria.org"
+    session_name: "anthropic-session"
+  openai:
+    mode: "record"
+    target_host: "api.openai.com"
     target_port: 443
-    session_name: "grpc-mock-session"
-
-  # test-grpc:
-  #   mode: "record"
-  #   protocol: "grpc"
-  #   target_host: "localhost"
-  #   target_port: 9191
-  #   session_name: "test-grpc-session"
+    protocol: "https"
+    session_name: "openai-session"
+  local-mock:
+    mode: "mock"
+    protocol: "http"
+    session_name: "local-test-session"
 
 database:
   path: "~/.mimic/recordings.db"
@@ -40,7 +36,7 @@ mock:
   matching_strategy: "exact" # exact | pattern | fuzzy
   sequence_mode: "ordered" # ordered | random
   not_found_response:
-    status: 199
+    status: 404
     body:
       error: "Recording not found"
 
