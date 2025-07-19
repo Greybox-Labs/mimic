@@ -1,21 +1,23 @@
+mode: mock
+
 server:
   listen_host: "0.0.0.0"
   listen_port: 8080
+  grpc_port: 9090
 
 proxies:
   anthropic:
-    mode: "mock"
+    protocol: "https"
     target_host: "api.anthropic.com"
     target_port: 443
-    protocol: "https"
     session_name: "anthropic-test"
 
   astria-grpc:
-    mode: "mock"
     protocol: "grpc"
     target_host: "grpc.astria.org"
     target_port: 443
     session_name: "grpc-mock-session"
+    service_pattern: "astria\\..*"
 
   # test-grpc:
   #   mode: "record"

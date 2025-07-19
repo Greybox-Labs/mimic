@@ -22,6 +22,7 @@ var (
 	inputFile     string
 	mergeStrategy string
 	debugMode     bool
+	modeFlag      string
 )
 
 var rootCmd = &cobra.Command{
@@ -41,6 +42,7 @@ func Execute() error {
 func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is config.yaml)")
 	rootCmd.PersistentFlags().BoolVar(&debugMode, "debug", false, "enable debug logging")
+	rootCmd.PersistentFlags().StringVar(&modeFlag, "mode", "", "operation mode (record or mock) - overrides config file setting")
 
 	rootCmd.AddCommand(exportCmd)
 	rootCmd.AddCommand(importCmd)
@@ -59,6 +61,11 @@ func runProxy() {
 	cfg, err := config.LoadConfig(cfgFile)
 	if err != nil {
 		log.Fatal("Failed to load config:", err)
+	}
+
+	// Override mode from CLI flag if provided
+	if modeFlag != "" {
+		cfg.Mode = modeFlag
 	}
 
 	if err := cfg.Validate(); err != nil {

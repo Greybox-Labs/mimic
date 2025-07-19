@@ -132,7 +132,7 @@ func (m *MockEngine) startHTTPMockServer(address string) error {
 	// All other requests go to mock handler
 	mux.HandleFunc("/", m.handleRequest)
 
-	log.Printf("Starting HTTP mock server in %s mode on %s", m.proxyConfig.Mode, address)
+	log.Printf("Starting HTTP mock server on %s", address)
 	log.Printf("Serving mocked responses for session: %s", m.session.SessionName)
 
 	return http.ListenAndServe(address, mux)
@@ -148,7 +148,7 @@ func (m *MockEngine) startGRPCMockServer(address string) error {
 		return fmt.Errorf("failed to listen on %s: %w", address, err)
 	}
 
-	log.Printf("Starting gRPC mock server in %s mode on %s", m.proxyConfig.Mode, address)
+	log.Printf("Starting gRPC mock server on %s", address)
 	log.Printf("Serving mocked responses for session: %s", m.session.SessionName)
 
 	return m.grpcServer.Serve(lis)

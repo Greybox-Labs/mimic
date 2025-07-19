@@ -56,7 +56,7 @@ func NewProxyEngineWithBroadcaster(proxyConfig config.ProxyConfig, db *storage.D
 
 	if proxyConfig.Protocol == "grpc" {
 		// Use raw proxy for better compatibility
-		rawProxy := NewRawGRPCProxy(&proxyConfig, db, session, grpcHandler)
+		rawProxy := NewRawGRPCProxy(&proxyConfig, "record", db, session, grpcHandler)
 		
 		// Set web broadcaster if available
 		if webServer != nil {
@@ -106,7 +106,7 @@ func (p *ProxyEngine) startHTTPServer(address string) error {
 	// All other requests go to proxy handler
 	mux.HandleFunc("/", p.handleRequest)
 
-	log.Printf("Starting HTTP proxy server in %s mode on %s", p.proxyConfig.Mode, address)
+	log.Printf("Starting HTTP proxy server on %s", address)
 	log.Printf("Proxying to %s://%s:%d", p.proxyConfig.Protocol, p.proxyConfig.TargetHost, p.proxyConfig.TargetPort)
 
 	return http.ListenAndServe(address, mux)
@@ -122,7 +122,7 @@ func (p *ProxyEngine) startGRPCServer(address string) error {
 		return fmt.Errorf("failed to listen on %s: %w", address, err)
 	}
 
-	log.Printf("Starting gRPC proxy server in %s mode on %s", p.proxyConfig.Mode, address)
+	log.Printf("Starting gRPC proxy server on %s", address)
 	log.Printf("Proxying to %s://%s:%d", p.proxyConfig.Protocol, p.proxyConfig.TargetHost, p.proxyConfig.TargetPort)
 
 	return p.grpcServer.Serve(lis)

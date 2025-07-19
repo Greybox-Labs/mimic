@@ -17,7 +17,6 @@ func TestMockEngineWithGRPC(t *testing.T) {
 
 	// Create gRPC mock config
 	proxyConfig := config.ProxyConfig{
-		Mode:        "mock",
 		Protocol:    "grpc",
 		SessionName: "test-session",
 	}
@@ -49,7 +48,6 @@ func TestMockEngineWithHTTP(t *testing.T) {
 
 	// Create HTTP mock config
 	proxyConfig := config.ProxyConfig{
-		Mode:        "mock",
 		Protocol:    "http",
 		SessionName: "test-session",
 	}

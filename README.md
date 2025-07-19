@@ -83,6 +83,7 @@ Mimic uses a configuration file located at `~/.mimic/config.yaml` by default. Th
 server:
   listen_host: "0.0.0.0"
   listen_port: 8080
+  grpc_port: 9080  # Optional: defaults to listen_port + 1000
 
 proxies:
   api1:
@@ -155,9 +156,9 @@ Record gRPC interactions by running mimic in record mode with a gRPC-configured 
 # Start gRPC recording
 mimic --config config-grpc.yaml
 
-# Your gRPC client should connect to localhost:9080 (HTTP port + 1000) instead of the original server
+# Your gRPC client should connect to localhost:9080 (configurable grpc_port) instead of the original server
 # Mimic will forward the calls and record all interactions
-# Example: if HTTP server runs on :8080, gRPC proxy will be on :9080
+# Example: if HTTP server runs on :8080, gRPC proxy will be on :9080 by default
 ```
 
 ### gRPC Mocking
@@ -185,8 +186,8 @@ mimic --mode mock --config config-grpc.yaml
    # Start mimic with gRPC proxy configuration
    mimic --config config-grpc-example.yaml
    
-   # Your gRPC client should connect to the gRPC proxy port (HTTP port + 1000)
-   # If HTTP server is on :8080, gRPC proxy will be on :9080
+   # Your gRPC client should connect to the gRPC proxy port (configurable grpc_port)
+   # If HTTP server is on :8080, gRPC proxy will be on :9080 by default
    buf curl --schema buf.build/your/api --protocol grpc localhost:9080/your.service/Method
    ```
 

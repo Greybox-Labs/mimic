@@ -44,7 +44,6 @@ func TestRawGRPCProxyUnaryCallDetection(t *testing.T) {
 	defer db.Close()
 
 	proxyConfig := config.ProxyConfig{
-		Mode:        "record",
 		Protocol:    "grpc",
 		TargetHost:  "localhost",
 		TargetPort:  9090,
@@ -54,7 +53,7 @@ func TestRawGRPCProxyUnaryCallDetection(t *testing.T) {
 	grpcHandler := NewGRPCHandler([]string{})
 	session, _ := db.GetOrCreateSession("test", "test")
 	
-	rawProxy := NewRawGRPCProxy(&proxyConfig, db, session, grpcHandler)
+	rawProxy := NewRawGRPCProxy(&proxyConfig, "record", db, session, grpcHandler)
 
 	// Test unary call detection
 	testCases := []struct {
@@ -88,7 +87,6 @@ func TestProxyEngineWithGRPC(t *testing.T) {
 
 	// Create gRPC proxy config
 	proxyConfig := config.ProxyConfig{
-		Mode:        "record",
 		Protocol:    "grpc",
 		TargetHost:  "localhost",
 		TargetPort:  9090,
@@ -122,7 +120,6 @@ func TestProxyEngineWithHTTP(t *testing.T) {
 
 	// Create HTTP proxy config
 	proxyConfig := config.ProxyConfig{
-		Mode:        "record",
 		Protocol:    "http",
 		TargetHost:  "localhost",
 		TargetPort:  8080,

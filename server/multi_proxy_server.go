@@ -16,11 +16,13 @@ import (
 )
 
 type MultiProxyServer struct {
-	config      *config.Config
-	database    *storage.Database
-	webServer   *web.Server
-	proxies     map[string]ProxyHandler
-	grpcServers map[string]*grpc.Server
+	config         *config.Config
+	database       *storage.Database
+	webServer      *web.Server
+	proxies        map[string]ProxyHandler
+	grpcServer     *grpc.Server      // Single gRPC server with routing
+	grpcRouter     *proxy.GRPCRouter // For gRPC record proxies
+	grpcMockRouter *mock.GRPCMockRouter // For gRPC mock proxies
 }
 
 type ProxyHandler interface {
@@ -31,73 +33,149 @@ func NewMultiProxyServer(cfg *config.Config, db *storage.Database) (*MultiProxyS
 	webServer := web.NewServer(cfg, db)
 
 	server := &MultiProxyServer{
-		config:      cfg,
-		database:    db,
-		webServer:   webServer,
-		proxies:     make(map[string]ProxyHandler),
-		grpcServers: make(map[string]*grpc.Server),
+		config:    cfg,
+		database:  db,
+		webServer: webServer,
+		proxies:   make(map[string]ProxyHandler),
 	}
 
-	// Initialize all configured proxies
+	// Separate HTTP and gRPC proxies
+	httpProxies := make(map[string]config.ProxyConfig)
+	grpcProxies := make(map[string]config.ProxyConfig)
+
 	for name, proxyConfig := range cfg.Proxies {
+		if proxyConfig.Protocol == "grpc" {
+			grpcProxies[name] = proxyConfig
+		} else {
+			// HTTP/HTTPS proxies - handle individually
+			httpProxies[name] = proxyConfig
+		}
+	}
+
+	// Initialize HTTP proxies (existing logic)
+	for name, proxyConfig := range httpProxies {
 		var handler ProxyHandler
 
-		switch proxyConfig.Mode {
+		switch cfg.Mode {
 		case "record":
 			if proxyEngine, err := proxy.NewProxyEngineWithBroadcaster(proxyConfig, db, webServer); err == nil {
 				handler = proxyEngine
-				// Extract gRPC server if this is a gRPC proxy
-				if proxyConfig.Protocol == "grpc" {
-					server.grpcServers[name] = proxyEngine.GetGRPCServer()
-				}
 			} else {
 				return nil, fmt.Errorf("failed to create proxy engine for '%s': %w", name, err)
 			}
 		case "mock":
 			if mockEngine, err := mock.NewMockEngineWithBroadcaster(proxyConfig, db, webServer); err == nil {
 				handler = mockEngine
-				// Extract gRPC server if this is a gRPC mock
-				if proxyConfig.Protocol == "grpc" {
-					server.grpcServers[name] = mockEngine.GetGRPCServer()
-				}
 			} else {
 				return nil, fmt.Errorf("failed to create mock engine for '%s': %w", name, err)
 			}
 		default:
-			return nil, fmt.Errorf("invalid proxy mode for '%s': %s", name, proxyConfig.Mode)
+			return nil, fmt.Errorf("invalid global mode: %s", cfg.Mode)
 		}
 
 		server.proxies[name] = handler
-		log.Printf("Initialized proxy '%s' in %s mode (protocol: %s)", name, proxyConfig.Mode, proxyConfig.Protocol)
+		log.Printf("Initialized HTTP proxy '%s' in %s mode", name, cfg.Mode)
+	}
+
+	// Initialize single gRPC server with routing (if any gRPC proxies exist)
+	if len(grpcProxies) > 0 {
+		var unknownServiceHandler grpc.StreamHandler
+
+		// Create gRPC router for record mode
+		if cfg.Mode == "record" {
+			router, err := proxy.NewGRPCRouter(grpcProxies, cfg.Mode, db, webServer)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create gRPC router: %w", err)
+			}
+			server.grpcRouter = router
+			unknownServiceHandler = router.GetUnknownServiceHandler()
+			
+		}
+
+		// Create gRPC mock router for mock mode
+		if cfg.Mode == "mock" {
+			mockRouter, err := mock.NewGRPCMockRouter(grpcProxies, db, webServer)
+			if err != nil {
+				return nil, fmt.Errorf("failed to create gRPC mock router: %w", err)
+			}
+			server.grpcMockRouter = mockRouter
+			// If we don't have a record router, use the mock router as the handler
+			if unknownServiceHandler == nil {
+				unknownServiceHandler = mockRouter.GetUnknownServiceHandler()
+			}
+		}
+		log.Printf("Initialized gRPC router with %d %s routes", len(grpcProxies), cfg.Mode)
+
+		// Create single gRPC server with routing
+		server.grpcServer = grpc.NewServer(
+			grpc.MaxRecvMsgSize(64*1024*1024),        // 64MB max receive message size
+			grpc.MaxSendMsgSize(64*1024*1024),        // 64MB max send message size
+			grpc.MaxHeaderListSize(64*1024*1024),     // 64MB max header list size
+			grpc.InitialWindowSize(64*1024*1024),     // 64MB initial window
+			grpc.InitialConnWindowSize(64*1024*1024), // 64MB connection window
+			grpc.UnknownServiceHandler(unknownServiceHandler),
+		)
+
+		log.Printf("Created single gRPC server with routing")
 	}
 
 	return server, nil
 }
 
 func (s *MultiProxyServer) Start() error {
-	// Start gRPC servers on separate ports if any exist
-	grpcPort := s.config.Server.ListenPort + 1000 // Use a different port range for gRPC
-	grpcPortMapping := make(map[string]int) // Track which proxy gets which port
-	
-	for name, grpcServer := range s.grpcServers {
-		if grpcServer != nil {
-			currentPort := grpcPort
-			grpcPortMapping[name] = currentPort
+	// Start single gRPC server with routing if any gRPC proxies exist
+	var grpcAddress string
+	if s.grpcServer != nil {
+		grpcAddress = fmt.Sprintf("%s:%d", s.config.Server.ListenHost, s.config.Server.GRPCPort)
+		
+		go func() {
+			lis, err := net.Listen("tcp", grpcAddress)
+			if err != nil {
+				log.Printf("Failed to start gRPC router server on %s: %v", grpcAddress, err)
+				return
+			}
 			
-			go func(serverName string, server *grpc.Server, port int) {
-				address := fmt.Sprintf("%s:%d", s.config.Server.ListenHost, port)
-				lis, err := net.Listen("tcp", address)
-				if err != nil {
-					log.Printf("Failed to start gRPC server for '%s' on %s: %v", serverName, address, err)
-					return
+			log.Printf("gRPC router server listening on %s", grpcAddress)
+			
+			// Log route information
+			if s.grpcRouter != nil {
+				routes := s.grpcRouter.GetRoutes()
+				for _, route := range routes {
+					if route.Config.ServicePattern != "" {
+						log.Printf("  → Route '%s': %s -> %s:%d", 
+							route.Name, 
+							route.Config.ServicePattern, 
+							route.Config.TargetHost, 
+							route.Config.TargetPort)
+					} else {
+						log.Printf("  → Route '%s': (default) -> %s:%d", 
+							route.Name, 
+							route.Config.TargetHost, 
+							route.Config.TargetPort)
+					}
 				}
-				log.Printf("gRPC proxy '%s' listening on %s", serverName, address)
-				if err := server.Serve(lis); err != nil {
-					log.Printf("gRPC server for '%s' failed: %v", serverName, err)
+			}
+			
+			if s.grpcMockRouter != nil {
+				routes := s.grpcMockRouter.GetRoutes()
+				for _, route := range routes {
+					if route.Config.ServicePattern != "" {
+						log.Printf("  → Mock Route '%s': %s -> session '%s'", 
+							route.Name, 
+							route.Config.ServicePattern, 
+							route.Session.SessionName)
+					} else {
+						log.Printf("  → Mock Route '%s': (default) -> session '%s'", 
+							route.Name, 
+							route.Session.SessionName)
+					}
 				}
-			}(name, grpcServer, currentPort)
-			grpcPort++
-		}
+			}
+			
+			if err := s.grpcServer.Serve(lis); err != nil {
+				log.Printf("gRPC router server failed: %v", err)
+			}
+		}()
 	}
 
 	// Set up HTTP server for web UI and HTTP proxies
@@ -106,45 +184,38 @@ func (s *MultiProxyServer) Start() error {
 	// Register web UI routes at top level
 	s.webServer.RegisterRoutes(mux)
 
-	// Register proxy routes at /proxy/<name>/
+	// Register HTTP proxy routes at /proxy/<name>/
 	httpProxyCount := 0
-	grpcProxyCount := 0
-	baseGRPCPort := s.config.Server.ListenPort + 1000
 
 	for name, proxyHandler := range s.proxies {
 		proxyPath := fmt.Sprintf("/proxy/%s/", name)
 		
-		// Check if this is a gRPC proxy
-		if _, isGRPC := s.grpcServers[name]; isGRPC {
-			// For gRPC proxies, provide an informational HTTP endpoint
-			currentGRPCPort := grpcPortMapping[name] // Use the correct mapped port
-			mux.HandleFunc(proxyPath, func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				fmt.Fprintf(w, `{
-	"message": "This is a gRPC proxy endpoint", 
-	"protocol": "grpc",
-	"grpc_address": "%s:%d",
-	"usage": "Connect your gRPC client to %s:%d",
-	"example": "buf curl --schema <your-schema> --protocol grpc %s:%d/your.service/Method"
-}`, s.config.Server.ListenHost, currentGRPCPort, s.config.Server.ListenHost, currentGRPCPort, s.config.Server.ListenHost, currentGRPCPort)
-			})
-			log.Printf("Registered gRPC proxy info '%s' at HTTP path %s", name, proxyPath)
-			grpcProxyCount++
-		} else {
-			// Regular HTTP proxy
-			mux.HandleFunc(proxyPath, func(w http.ResponseWriter, r *http.Request) {
-				// Strip the proxy path prefix and forward to the proxy handler
-				originalPath := r.URL.Path
-				r.URL.Path = strings.TrimPrefix(originalPath, fmt.Sprintf("/proxy/%s", name))
-				if r.URL.Path == "" {
-					r.URL.Path = "/"
-				}
-				proxyHandler.HandleRequest(w, r)
-			})
-			log.Printf("Registered HTTP proxy '%s' at path %s", name, proxyPath)
-			httpProxyCount++
-		}
+		// Regular HTTP proxy
+		mux.HandleFunc(proxyPath, func(w http.ResponseWriter, r *http.Request) {
+			// Strip the proxy path prefix and forward to the proxy handler
+			originalPath := r.URL.Path
+			r.URL.Path = strings.TrimPrefix(originalPath, fmt.Sprintf("/proxy/%s", name))
+			if r.URL.Path == "" {
+				r.URL.Path = "/"
+			}
+			proxyHandler.HandleRequest(w, r)
+		})
+		log.Printf("Registered HTTP proxy '%s' at path %s", name, proxyPath)
+		httpProxyCount++
+	}
+
+	// Add gRPC info endpoint if gRPC server exists
+	if s.grpcServer != nil {
+		mux.HandleFunc("/grpc/info", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, `{
+	"message": "gRPC router server with path-based routing", 
+	"grpc_address": "%s",
+	"usage": "Connect your gRPC client to %s",
+	"example": "grpcurl -plaintext %s your.service/Method"
+}`, grpcAddress, grpcAddress, grpcAddress)
+		})
 	}
 
 	httpAddress := fmt.Sprintf("%s:%d", s.config.Server.ListenHost, s.config.Server.ListenPort)
@@ -156,15 +227,18 @@ func (s *MultiProxyServer) Start() error {
 		log.Printf("HTTP proxies (%d) available at http://%s/proxy/<name>/", httpProxyCount, httpAddress)
 	}
 	
-	if grpcProxyCount > 0 {
-		log.Printf("gRPC proxies (%d) available on ports %d-%d", grpcProxyCount, baseGRPCPort, baseGRPCPort+grpcProxyCount-1)
-		for name := range s.grpcServers {
-			if s.grpcServers[name] != nil {
-				currentPort := grpcPortMapping[name]
-				log.Printf("  → gRPC proxy '%s' at %s:%d", name, s.config.Server.ListenHost, currentPort)
-			}
-		}
+	if s.grpcServer != nil {
+		log.Printf("gRPC router server available at %s", grpcAddress)
+		log.Printf("gRPC info available at http://%s/grpc/info", httpAddress)
 	}
 
 	return http.ListenAndServe(httpAddress, mux)
+}
+
+// Stop gracefully stops the server
+func (s *MultiProxyServer) Stop() error {
+	if s.grpcServer != nil {
+		s.grpcServer.GracefulStop()
+	}
+	return nil
 }

@@ -22,6 +22,7 @@ import (
 // RawGRPCProxy implements raw byte-level gRPC proxying
 type RawGRPCProxy struct {
 	config    *config.ProxyConfig
+	mode      string // Global mode: "record" or "mock"
 	database  *storage.Database
 	session   *storage.Session
 	handler   *GRPCHandler
@@ -30,9 +31,10 @@ type RawGRPCProxy struct {
 
 
 
-func NewRawGRPCProxy(proxyConfig *config.ProxyConfig, db *storage.Database, session *storage.Session, grpcHandler *GRPCHandler) *RawGRPCProxy {
+func NewRawGRPCProxy(proxyConfig *config.ProxyConfig, mode string, db *storage.Database, session *storage.Session, grpcHandler *GRPCHandler) *RawGRPCProxy {
 	return &RawGRPCProxy{
 		config:    proxyConfig,
+		mode:      mode,
 		database:  db,
 		session:   session,
 		handler:   grpcHandler,
@@ -131,9 +133,7 @@ func (p *RawGRPCProxy) proxyRawStream(serverStream grpc.ServerStream, clientStre
 				return
 			}
 
-			if p.config.Mode == "record" {
-				log.Printf("→ %s: %d bytes", method, len(msg.Data))
-			}
+			log.Printf("→ %s: %d bytes", method, len(msg.Data))
 
 			if err := clientStream.SendMsg(msg); err != nil {
 				errCh <- fmt.Errorf("client send error: %w", err)
@@ -155,9 +155,7 @@ func (p *RawGRPCProxy) proxyRawStream(serverStream grpc.ServerStream, clientStre
 				return
 			}
 
-			if p.config.Mode == "record" {
-				log.Printf("← %s: %d bytes", method, len(msg.Data))
-			}
+			log.Printf("← %s: %d bytes", method, len(msg.Data))
 
 			if err := serverStream.SendMsg(msg); err != nil {
 				errCh <- fmt.Errorf("server send error: %w", err)
@@ -232,7 +230,7 @@ func (p *RawGRPCProxy) handleUnaryCall(ctx context.Context, conn *grpc.ClientCon
 		return status.Errorf(codes.Internal, "failed to receive request: %v", err)
 	}
 
-	if p.config.Mode == "record" {
+	if p.mode == "record" {
 		log.Printf("→ %s: %d bytes (unary)", method, len(requestMsg.Data))
 	}
 
@@ -242,7 +240,7 @@ func (p *RawGRPCProxy) handleUnaryCall(ctx context.Context, conn *grpc.ClientCon
 	
 	// Create interaction record for database storage
 	var interaction *storage.Interaction
-	if p.config.Mode == "record" {
+	if p.mode == "record" {
 		interaction = &storage.Interaction{
 			RequestID:      GenerateRequestID(),
 			SessionID:      p.session.ID,
@@ -270,7 +268,7 @@ func (p *RawGRPCProxy) handleUnaryCall(ctx context.Context, conn *grpc.ClientCon
 	err := conn.Invoke(outCtx, method, &requestMsg, &responseMsg, grpc.ForceCodec(GetRawCodec()))
 	
 	// Handle recording and response
-	if p.config.Mode == "record" {
+	if p.mode == "record" {
 		statusCode := 0
 		if err != nil {
 			if st, ok := status.FromError(err); ok {
