@@ -52,7 +52,7 @@ func TestRawGRPCProxyUnaryCallDetection(t *testing.T) {
 
 	grpcHandler := NewGRPCHandler([]string{})
 	session, _ := db.GetOrCreateSession("test", "test")
-	
+
 	rawProxy := NewRawGRPCProxy(&proxyConfig, "record", db, session, grpcHandler)
 
 	// Test unary call detection
