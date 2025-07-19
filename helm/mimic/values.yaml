@@ -1,0 +1,252 @@
+# Default values for mimic
+# This is a YAML-formatted file.
+
+# Global settings
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+
+# Image configuration
+image:
+  repository: mimic
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+# Service account
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# Pod configuration
+replicaCount: 1
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# Pod security context
+podSecurityContext:
+  fsGroup: 1001
+  runAsUser: 1001
+  runAsGroup: 1001
+  runAsNonRoot: true
+
+# Container security context
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1001
+  capabilities:
+    drop:
+      - ALL
+
+# Resource limits
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Node selection
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Pod annotations and labels
+podAnnotations: {}
+podLabels: {}
+
+# Service configuration
+service:
+  type: ClusterIP
+  http:
+    port: 8080
+    targetPort: 8080
+    name: http
+  grpc:
+    port: 9090
+    targetPort: 9090
+    name: grpc
+  annotations: {}
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # kubernetes.io/tls-acme: "true"
+  hosts:
+    - host: mimic.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: mimic-tls
+  #    hosts:
+  #      - mimic.local
+
+# Persistence for SQLite database
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  annotations: {}
+
+# Mimic application configuration
+config:
+  # Global mode: record | mock | replay
+  mode: "record"
+  
+  # Server configuration
+  server:
+    listen_host: "0.0.0.0"
+    listen_port: 8080
+    grpc_port: 9090
+  
+  # Database configuration
+  database:
+    path: "/data/recordings.db"
+    connection_pool_size: 10
+  
+  # Recording configuration
+  recording:
+    session_name: "default"
+    capture_headers: true
+    capture_body: true
+    redact_patterns:
+      - "Authorization: Bearer .*"
+      - "X-Api-Key: .*"
+  
+  # Mock configuration
+  mock:
+    matching_strategy: "exact"
+    sequence_mode: "ordered"
+    not_found_response:
+      status: 404
+      body:
+        error: "Recording not found"
+  
+  # gRPC configuration
+  grpc:
+    proto_paths:
+      - "/app/protos"
+    reflection_enabled: true
+  
+  # Export configuration
+  export:
+    format: "json"
+    pretty_print: true
+    compress: false
+  
+  # Proxy configurations
+  proxies: {}
+    # Example proxy configuration:
+    # api-example:
+    #   mode: "record"
+    #   protocol: "https"
+    #   target_host: "api.example.com"
+    #   target_port: 443
+    #   session_name: "api-example-session"
+    # 
+    # grpc-example:
+    #   mode: "record"
+    #   protocol: "grpc"
+    #   target_host: "grpc.example.com"
+    #   target_port: 443
+    #   session_name: "grpc-example-session"
+    #   service_pattern: "example\\..*"
+
+# Environment variables
+env: []
+  # - name: MIMIC_LOG_LEVEL
+  #   value: "debug"
+
+# Extra environment variables from secrets or configmaps
+envFrom: []
+  # - secretRef:
+  #     name: mimic-secrets
+  # - configMapRef:
+  #     name: mimic-config
+
+# Liveness probe
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+  successThreshold: 1
+
+# Readiness probe
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+  successThreshold: 1
+
+# Startup probe
+startupProbe:
+  enabled: true
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 30
+  successThreshold: 1
+
+# Horizontal Pod Autoscaler
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+# Pod monitor for Prometheus (if prometheus-operator is installed)
+podMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+
+# Service monitor for Prometheus (if prometheus-operator is installed)
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+
+# Extra volumes
+extraVolumes: []
+  # - name: proto-files
+  #   configMap:
+  #     name: proto-files
+
+# Extra volume mounts
+extraVolumeMounts: []
+  # - name: proto-files
+  #   mountPath: /app/protos
+  #   readOnly: true
+
+# Init containers
+initContainers: []
+
+# Sidecar containers
+sidecars: []

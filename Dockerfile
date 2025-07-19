@@ -1,0 +1,83 @@
+# Multi-architecture Dockerfile for Mimic
+# Supports both amd64 and arm64 architectures
+
+# Build stage
+FROM --platform=$BUILDPLATFORM golang:1.21-alpine AS builder
+
+# Build arguments for cross-compilation
+ARG TARGETOS
+ARG TARGETARCH
+ARG BUILDPLATFORM
+
+# Install build dependencies including gcc for CGO (required for SQLite)
+RUN apk update && apk add --no-cache \
+    git \
+    ca-certificates \
+    tzdata \
+    gcc \
+    musl-dev \
+    sqlite-dev \
+    && update-ca-certificates
+
+# Create appuser for security
+RUN adduser -D -g '' appuser
+
+# Set working directory
+WORKDIR /app
+
+# Copy go mod files first for better caching
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+RUN go mod verify
+
+# Copy source code
+COPY . .
+
+# Build the binary with optimizations for target architecture
+RUN CGO_ENABLED=1 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
+    -ldflags='-w -s' \
+    -o mimic .
+
+# Final stage - minimal runtime image
+FROM --platform=$TARGETPLATFORM alpine:latest
+
+# Install runtime dependencies
+RUN apk --no-cache add \
+    ca-certificates \
+    sqlite \
+    musl \
+    wget
+
+# Create appuser
+RUN addgroup -g 1001 appuser && adduser -u 1001 -G appuser -s /bin/sh -D appuser
+
+# Create directories
+RUN mkdir -p /app/web/static /app/protos /data && \
+    chown -R appuser:appuser /app /data
+
+WORKDIR /app
+
+# Copy static files for web UI
+COPY --from=builder --chown=appuser:appuser /app/web/static ./web/static
+
+# Copy the binary
+COPY --from=builder --chown=appuser:appuser /app/mimic .
+
+# Copy example configurations
+COPY --from=builder --chown=appuser:appuser /app/config*.yaml ./
+
+# Use non-root user
+USER appuser
+
+# Expose ports
+EXPOSE 8080 9090
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/ || exit 1
+
+# Set entrypoint
+ENTRYPOINT ["./mimic"]
+CMD ["--config", "/app/config/config.yaml"]

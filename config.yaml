@@ -16,7 +16,7 @@ proxies:
     protocol: "grpc"
     target_host: "grpc.astria.org"
     target_port: 443
-    session_name: "test-replay"
+    session_name: "test-replay-2"
     service_pattern: "astria\\..*"
 
   # test-grpc:
