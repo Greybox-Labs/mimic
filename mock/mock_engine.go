@@ -20,7 +20,7 @@ import (
 	"mimic/storage"
 )
 
-// mockRawMessage for handling raw gRPC message data in mock responses  
+// mockRawMessage for handling raw gRPC message data in mock responses
 type mockRawMessage struct {
 	Data []byte
 }
@@ -43,7 +43,7 @@ func (m *mockRawMessage) Marshal() ([]byte, error) {
 	return m.Data, nil
 }
 
-// Unmarshal implements protobuf unmarshaling  
+// Unmarshal implements protobuf unmarshaling
 func (m *mockRawMessage) Unmarshal(data []byte) error {
 	m.Data = make([]byte, len(data))
 	copy(m.Data, data)
@@ -88,13 +88,13 @@ func NewMockEngineWithBroadcaster(proxyConfig config.ProxyConfig, db *storage.Da
 	var grpcServer *grpc.Server
 	if proxyConfig.Protocol == "grpc" {
 		grpcServer = grpc.NewServer(
-			grpc.MaxRecvMsgSize(64*1024*1024),       // 64MB max receive message size
-			grpc.MaxSendMsgSize(64*1024*1024),       // 64MB max send message size
-			grpc.MaxHeaderListSize(64*1024*1024),    // 64MB max header list size
-			grpc.InitialWindowSize(64*1024*1024),    // 64MB initial window
+			grpc.MaxRecvMsgSize(64*1024*1024),        // 64MB max receive message size
+			grpc.MaxSendMsgSize(64*1024*1024),        // 64MB max send message size
+			grpc.MaxHeaderListSize(64*1024*1024),     // 64MB max header list size
+			grpc.InitialWindowSize(64*1024*1024),     // 64MB initial window
 			grpc.InitialConnWindowSize(64*1024*1024), // 64MB connection window
 			grpc.UnknownServiceHandler(func(srv interface{}, stream grpc.ServerStream) error {
-				return handleGRPCMockRequest(stream, db, session, grpcHandler)
+				return handleGRPCMockRequest(stream, db, session, grpcHandler, webServer)
 			}),
 		)
 	}
@@ -462,7 +462,7 @@ func (m *MockEngine) GetSequenceState() map[string]int {
 }
 
 // handleGRPCMockRequest handles gRPC mock requests
-func handleGRPCMockRequest(stream grpc.ServerStream, db *storage.Database, session *storage.Session, grpcHandler *proxy.GRPCHandler) error {
+func handleGRPCMockRequest(stream grpc.ServerStream, db *storage.Database, session *storage.Session, grpcHandler *proxy.GRPCHandler, webServer WebBroadcaster) error {
 	fullMethodName, ok := grpc.MethodFromServerStream(stream)
 	if !ok {
 		return status.Errorf(codes.Internal, "failed to get method from stream")
@@ -511,6 +511,19 @@ func handleGRPCMockRequest(stream grpc.ServerStream, db *storage.Database, sessi
 		return status.Errorf(codes.Internal, "failed to receive request: %v", err)
 	}
 
+	// Generate request ID for tracking
+	requestID := proxy.GenerateRequestID()
+
+	// Broadcast request event to web UI
+	if webServer != nil {
+		log.Printf("[DEBUG] Broadcasting gRPC mock request to web UI: %s", fullMethodName)
+		headers := make(map[string]interface{})
+		body := fmt.Sprintf("gRPC mock request (%d bytes)", len(requestMsg.Data))
+		webServer.BroadcastRequest(fullMethodName, fullMethodName, session.SessionName, "grpc-mock-client", requestID, headers, body)
+	} else {
+		log.Printf("[DEBUG] No webServer available for broadcasting gRPC mock request")
+	}
+
 	// Send the recorded response body if available
 	if len(selectedInteraction.ResponseBody) > 0 {
 		// Create a raw message with the recorded response data
@@ -521,6 +534,16 @@ func handleGRPCMockRequest(stream grpc.ServerStream, db *storage.Database, sessi
 		log.Printf("Served gRPC mock response: %s -> %d (%d bytes)", fullMethodName, selectedInteraction.ResponseStatus, len(selectedInteraction.ResponseBody))
 	} else {
 		log.Printf("Served gRPC mock response: %s -> %d (empty response)", fullMethodName, selectedInteraction.ResponseStatus)
+	}
+
+	// Broadcast response event to web UI
+	if webServer != nil {
+		log.Printf("[DEBUG] Broadcasting gRPC mock response to web UI: %s", fullMethodName)
+		responseHeaders := make(map[string]interface{})
+		responseBody := fmt.Sprintf("gRPC mock response (%d bytes)", len(selectedInteraction.ResponseBody))
+		webServer.BroadcastResponse(fullMethodName, fullMethodName, session.SessionName, "grpc-mock-client", requestID, selectedInteraction.ResponseStatus, responseHeaders, responseBody)
+	} else {
+		log.Printf("[DEBUG] No webServer available for broadcasting gRPC mock response")
 	}
 
 	return nil

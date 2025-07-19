@@ -29,8 +29,6 @@ type RawGRPCProxy struct {
 	webServer WebBroadcaster
 }
 
-
-
 func NewRawGRPCProxy(proxyConfig *config.ProxyConfig, mode string, db *storage.Database, session *storage.Session, grpcHandler *GRPCHandler) *RawGRPCProxy {
 	return &RawGRPCProxy{
 		config:    proxyConfig,
@@ -45,8 +43,6 @@ func NewRawGRPCProxy(proxyConfig *config.ProxyConfig, mode string, db *storage.D
 func (p *RawGRPCProxy) SetWebBroadcaster(wb WebBroadcaster) {
 	p.webServer = wb
 }
-
-
 
 // GetUnknownServiceHandler returns a handler that can proxy any gRPC service using raw bytes
 func (p *RawGRPCProxy) GetUnknownServiceHandler() grpc.StreamHandler {
@@ -167,8 +163,6 @@ func (p *RawGRPCProxy) proxyRawStream(serverStream grpc.ServerStream, clientStre
 	return <-errCh
 }
 
-
-
 func (p *RawGRPCProxy) metadataToJSON(md metadata.MD) string {
 	metadataMap := make(map[string][]string)
 	for key, values := range md {
@@ -199,25 +193,25 @@ func (p *RawGRPCProxy) isLikelyUnaryCall(method string) bool {
 	streamingPatterns := []string{
 		"Stream", "Watch", "Subscribe", "Listen", "Monitor", "Observe",
 	}
-	
+
 	for _, pattern := range streamingPatterns {
 		if strings.Contains(method, pattern) {
 			return false
 		}
 	}
-	
+
 	// Common patterns for unary calls
 	unaryPatterns := []string{
-		"Get", "Create", "Update", "Delete", "Check", "Validate", 
+		"Get", "Create", "Update", "Delete", "Check", "Validate",
 		"Info", "Status", "Health", "Ping", "Version", "List",
 	}
-	
+
 	for _, pattern := range unaryPatterns {
 		if strings.Contains(method, pattern) {
 			return true
 		}
 	}
-	
+
 	// Default to unary for unknown patterns
 	return true
 }
@@ -237,7 +231,7 @@ func (p *RawGRPCProxy) handleUnaryCall(ctx context.Context, conn *grpc.ClientCon
 	// Extract and forward metadata
 	md, _ := metadata.FromIncomingContext(stream.Context())
 	outCtx := metadata.NewOutgoingContext(ctx, md)
-	
+
 	// Create interaction record for database storage
 	var interaction *storage.Interaction
 	if p.mode == "record" {
@@ -262,11 +256,11 @@ func (p *RawGRPCProxy) handleUnaryCall(ctx context.Context, conn *grpc.ClientCon
 			log.Printf("[DEBUG] No webServer available for broadcasting gRPC request")
 		}
 	}
-	
+
 	// Forward the unary call to target server
 	var responseMsg RawMessage
 	err := conn.Invoke(outCtx, method, &requestMsg, &responseMsg, grpc.ForceCodec(GetRawCodec()))
-	
+
 	// Handle recording and response
 	if p.mode == "record" {
 		statusCode := 0
