@@ -4,8 +4,9 @@
 *.dll
 *.so
 *.dylib
-mimic
 mimic-*
+
+./mimic
 
 # Test binary, built with `go test -c`
 *.test

@@ -1,0 +1,200 @@
+# Example Kubernetes deployment configurations for different use cases
+
+---
+# Development environment - Recording mode
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mimic-dev
+---
+# values-dev.yaml for: helm install mimic-dev ./helm/mimic -f examples/values-dev.yaml -n mimic-dev
+# Development recording setup
+config:
+  mode: "record"
+  server:
+    listen_host: "0.0.0.0"
+    listen_port: 8080
+    grpc_port: 9090
+  proxies:
+    external-api:
+      protocol: "https"
+      target_host: "jsonplaceholder.typicode.com"
+      target_port: 443
+      session_name: "dev-api-recording"
+    grpc-demo:
+      protocol: "grpc"
+      target_host: "grpc-demo.example.com"
+      target_port: 443
+      session_name: "grpc-demo-recording"
+      service_pattern: "demo\\..*"
+
+persistence:
+  enabled: true
+  size: "500Mi"
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+---
+# Testing environment - Mock mode  
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mimic-test
+---
+# values-test.yaml for: helm install mimic-test ./helm/mimic -f examples/values-test.yaml -n mimic-test
+# Testing mock setup
+config:
+  mode: "mock"
+  mock:
+    matching_strategy: "exact"
+    sequence_mode: "ordered"
+  proxies:
+    user-service:
+      session_name: "user-service-mocks"
+    payment-service:
+      session_name: "payment-service-mocks"
+    notification-grpc:
+      protocol: "grpc"
+      session_name: "notification-mocks"
+      service_pattern: "notification\\..*"
+
+service:
+  type: ClusterIP
+
+ingress:
+  enabled: true
+  className: "nginx"
+  hosts:
+    - host: mimic-test.local
+      paths:
+        - path: /
+          pathType: Prefix
+
+persistence:
+  enabled: true
+  size: "1Gi"
+
+---
+# Production environment - High availability
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mimic-prod
+---
+# values-prod.yaml for: helm install mimic-prod ./helm/mimic -f examples/values-prod.yaml -n mimic-prod
+# Production setup
+replicaCount: 3
+
+config:
+  mode: "mock"
+  mock:
+    matching_strategy: "exact"
+    sequence_mode: "random"
+  recording:
+    redact_patterns:
+      - "Authorization: Bearer .*"
+      - "X-Api-Key: .*"
+      - "X-Auth-Token: .*"
+  proxies:
+    api-gateway:
+      session_name: "production-api-mocks"
+    user-grpc:
+      protocol: "grpc"
+      session_name: "user-service-prod"
+      service_pattern: "user\\.v1\\..*"
+    order-grpc:
+      protocol: "grpc" 
+      session_name: "order-service-prod"
+      service_pattern: "order\\.v1\\..*"
+
+image:
+  tag: "v1.0.0"
+  pullPolicy: Always
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 200m
+    memory: 256Mi
+
+podSecurityContext:
+  fsGroup: 1001
+  runAsUser: 1001
+  runAsNonRoot: true
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1001
+  capabilities:
+    drop:
+      - ALL
+
+persistence:
+  enabled: true
+  storageClass: "gp2"
+  size: "10Gi"
+
+service:
+  type: LoadBalancer
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+
+ingress:
+  enabled: true
+  className: "alb"
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+  hosts:
+    - host: mimic.yourdomain.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: mimic-tls
+      hosts:
+        - mimic.yourdomain.com
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector:
+  kubernetes.io/arch: amd64
+
+tolerations:
+  - key: "mimic-nodes"
+    operator: "Equal"
+    value: "true"
+    effect: "NoSchedule"
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - mimic
+          topologyKey: kubernetes.io/hostname

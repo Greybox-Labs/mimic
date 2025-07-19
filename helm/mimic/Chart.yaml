@@ -1,0 +1,22 @@
+apiVersion: v2
+name: mimic
+description: A Helm chart for Mimic - API Record and Replay Tool
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - proxy
+  - api
+  - testing
+  - mock
+  - recording
+  - grpc
+  - http
+home: https://github.com/your-org/mimic
+sources:
+  - https://github.com/your-org/mimic
+maintainers:
+  - name: Mimic Team
+    email: team@mimic.dev
+annotations:
+  category: Testing

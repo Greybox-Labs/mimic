@@ -1,0 +1,37 @@
+# Ignore build artifacts
+mimic
+*.db
+*.log
+
+# Ignore development files
+.git
+.gitignore
+README.md
+*.md
+justfile
+
+# Ignore test files
+*_test.go
+test/
+
+# Ignore IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore temporary files
+tmp/
+temp/
+*.tmp
+
+# Ignore helm chart (built separately)
+helm/
+
+# Ignore docker files
+Dockerfile*
+.dockerignore
