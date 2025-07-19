@@ -9,21 +9,26 @@ import (
 )
 
 type Config struct {
-	Proxy      ProxyConfig      `mapstructure:"proxy"`
-	Database   DatabaseConfig   `mapstructure:"database"`
-	Recording  RecordingConfig  `mapstructure:"recording"`
-	Mock       MockConfig       `mapstructure:"mock"`
-	GRPC       GRPCConfig       `mapstructure:"grpc"`
-	Export     ExportConfig     `mapstructure:"export"`
+	Server    ServerConfig               `mapstructure:"server"`
+	Proxies   map[string]ProxyConfig     `mapstructure:"proxies"`
+	Database  DatabaseConfig             `mapstructure:"database"`
+	Recording RecordingConfig            `mapstructure:"recording"`
+	Mock      MockConfig                 `mapstructure:"mock"`
+	GRPC      GRPCConfig                 `mapstructure:"grpc"`
+	Export    ExportConfig               `mapstructure:"export"`
+}
+
+type ServerConfig struct {
+	ListenHost string `mapstructure:"listen_host"`
+	ListenPort int    `mapstructure:"listen_port"`
 }
 
 type ProxyConfig struct {
-	Mode       string `mapstructure:"mode"`
-	TargetHost string `mapstructure:"target_host"`
-	TargetPort int    `mapstructure:"target_port"`
-	ListenHost string `mapstructure:"listen_host"`
-	ListenPort int    `mapstructure:"listen_port"`
-	Protocol   string `mapstructure:"protocol"`
+	Mode        string `mapstructure:"mode"`
+	TargetHost  string `mapstructure:"target_host"`
+	TargetPort  int    `mapstructure:"target_port"`
+	Protocol    string `mapstructure:"protocol"`
+	SessionName string `mapstructure:"session_name"`
 }
 
 type DatabaseConfig struct {
@@ -39,9 +44,9 @@ type RecordingConfig struct {
 }
 
 type MockConfig struct {
-	MatchingStrategy   string                 `mapstructure:"matching_strategy"`
-	SequenceMode       string                 `mapstructure:"sequence_mode"`
-	NotFoundResponse   NotFoundResponseConfig `mapstructure:"not_found_response"`
+	MatchingStrategy string                 `mapstructure:"matching_strategy"`
+	SequenceMode     string                 `mapstructure:"sequence_mode"`
+	NotFoundResponse NotFoundResponseConfig `mapstructure:"not_found_response"`
 }
 
 type NotFoundResponseConfig struct {
@@ -109,28 +114,26 @@ func ensureMimicDirectory() error {
 func setDefaults() {
 	homeDir, _ := os.UserHomeDir()
 	defaultDBPath := filepath.Join(homeDir, ".mimic", "recordings.db")
-	
-	viper.SetDefault("proxy.mode", "record")
-	viper.SetDefault("proxy.listen_host", "0.0.0.0")
-	viper.SetDefault("proxy.listen_port", 8080)
-	viper.SetDefault("proxy.protocol", "http")
-	
+
+	viper.SetDefault("server.listen_host", "0.0.0.0")
+	viper.SetDefault("server.listen_port", 8080)
+
 	viper.SetDefault("database.path", defaultDBPath)
 	viper.SetDefault("database.connection_pool_size", 10)
-	
+
 	viper.SetDefault("recording.session_name", "default")
 	viper.SetDefault("recording.capture_headers", true)
 	viper.SetDefault("recording.capture_body", true)
-	
+
 	viper.SetDefault("mock.matching_strategy", "exact")
 	viper.SetDefault("mock.sequence_mode", "ordered")
 	viper.SetDefault("mock.not_found_response.status", 404)
 	viper.SetDefault("mock.not_found_response.body", map[string]interface{}{
 		"error": "Recording not found",
 	})
-	
+
 	viper.SetDefault("grpc.reflection_enabled", true)
-	
+
 	viper.SetDefault("export.format", "json")
 	viper.SetDefault("export.pretty_print", true)
 	viper.SetDefault("export.compress", false)
@@ -139,13 +142,18 @@ func setDefaults() {
 func getDefaultConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
 	defaultDBPath := filepath.Join(homeDir, ".mimic", "recordings.db")
-	
+
 	return &Config{
-		Proxy: ProxyConfig{
-			Mode:       "record",
+		Server: ServerConfig{
 			ListenHost: "0.0.0.0",
 			ListenPort: 8080,
-			Protocol:   "http",
+		},
+		Proxies: map[string]ProxyConfig{
+			"default": {
+				Mode:        "record",
+				Protocol:    "http",
+				SessionName: "default",
+			},
 		},
 		Database: DatabaseConfig{
 			Path:               defaultDBPath,
@@ -178,36 +186,47 @@ func getDefaultConfig() *Config {
 }
 
 func (c *Config) Validate() error {
-	if c.Proxy.Mode != "record" && c.Proxy.Mode != "mock" {
-		return fmt.Errorf("invalid proxy mode: %s (must be 'record' or 'mock')", c.Proxy.Mode)
+	if c.Server.ListenPort <= 0 || c.Server.ListenPort > 65535 {
+		return fmt.Errorf("invalid server listen_port: %d", c.Server.ListenPort)
 	}
-	
-	if c.Proxy.Mode == "record" && (c.Proxy.TargetHost == "" || c.Proxy.TargetPort == 0) {
-		return fmt.Errorf("target_host and target_port are required in record mode")
+
+	if len(c.Proxies) == 0 {
+		return fmt.Errorf("at least one proxy must be configured")
 	}
-	
-	if c.Proxy.ListenPort <= 0 || c.Proxy.ListenPort > 65535 {
-		return fmt.Errorf("invalid listen_port: %d", c.Proxy.ListenPort)
+
+	for name, proxy := range c.Proxies {
+		if proxy.Mode != "record" && proxy.Mode != "mock" {
+			return fmt.Errorf("invalid proxy mode for '%s': %s (must be 'record' or 'mock')", name, proxy.Mode)
+		}
+
+		if proxy.Mode == "record" && (proxy.TargetHost == "" || proxy.TargetPort == 0) {
+			return fmt.Errorf("target_host and target_port are required in record mode for proxy '%s'", name)
+		}
+
+		if proxy.SessionName == "" {
+			return fmt.Errorf("session_name is required for proxy '%s'", name)
+		}
 	}
-	
+
 	if c.Database.Path == "" {
 		return fmt.Errorf("database path cannot be empty")
 	}
-	
+
 	return nil
 }
 
 func SaveConfig(config *Config, path string) error {
-	viper.Set("proxy", config.Proxy)
+	viper.Set("server", config.Server)
+	viper.Set("proxies", config.Proxies)
 	viper.Set("database", config.Database)
 	viper.Set("recording", config.Recording)
 	viper.Set("mock", config.Mock)
 	viper.Set("grpc", config.GRPC)
 	viper.Set("export", config.Export)
-	
+
 	if path == "" {
 		path = "config.yaml"
 	}
-	
+
 	return viper.WriteConfigAs(path)
 }

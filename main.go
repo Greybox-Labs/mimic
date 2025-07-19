@@ -1,8 +1,8 @@
 package main
 
 import (
-	"mimic/cmd"
 	"log"
+	"mimic/cmd"
 )
 
 func main() {

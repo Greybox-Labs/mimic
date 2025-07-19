@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,21 +12,31 @@ import (
 )
 
 type ProxyEngine struct {
-	config      *config.Config
+	proxyConfig *config.ProxyConfig
 	database    *storage.Database
 	restHandler *RESTHandler
 	session     *storage.Session
 	client      *http.Client
+	webServer   WebBroadcaster
 }
 
-func NewProxyEngine(cfg *config.Config, db *storage.Database) (*ProxyEngine, error) {
-	session, err := db.GetOrCreateSession(cfg.Recording.SessionName, "Proxy recording session")
+type WebBroadcaster interface {
+	BroadcastRequest(method, endpoint, sessionName, remoteAddr, requestID string, headers map[string]interface{}, body string)
+	BroadcastResponse(method, endpoint, sessionName, remoteAddr, requestID string, status int, headers map[string]interface{}, body string)
+}
+
+func NewProxyEngine(proxyConfig config.ProxyConfig, db *storage.Database) (*ProxyEngine, error) {
+	return NewProxyEngineWithBroadcaster(proxyConfig, db, nil)
+}
+
+func NewProxyEngineWithBroadcaster(proxyConfig config.ProxyConfig, db *storage.Database, webServer WebBroadcaster) (*ProxyEngine, error) {
+	session, err := db.GetOrCreateSession(proxyConfig.SessionName, "Proxy recording session")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get or create session: %w", err)
 	}
 
-	restHandler := NewRESTHandler(cfg.Recording.RedactPatterns)
-	
+	restHandler := NewRESTHandler([]string{}) // Use empty redact patterns for now
+
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
@@ -37,40 +48,64 @@ func NewProxyEngine(cfg *config.Config, db *storage.Database) (*ProxyEngine, err
 	}
 
 	return &ProxyEngine{
-		config:      cfg,
+		proxyConfig: &proxyConfig,
 		database:    db,
 		restHandler: restHandler,
 		session:     session,
 		client:      client,
+		webServer:   webServer,
 	}, nil
 }
 
+
+
 func (p *ProxyEngine) Start() error {
-	http.HandleFunc("/", p.handleRequest)
+	mux := http.NewServeMux()
 	
-	address := fmt.Sprintf("%s:%d", p.config.Proxy.ListenHost, p.config.Proxy.ListenPort)
-	log.Printf("Starting proxy server in %s mode on %s", p.config.Proxy.Mode, address)
-	log.Printf("Proxying to %s://%s:%d", p.config.Proxy.Protocol, p.config.Proxy.TargetHost, p.config.Proxy.TargetPort)
+	// Register web UI routes if webServer is available
+	if webServer, ok := p.webServer.(interface{ RegisterRoutes(*http.ServeMux) }); ok {
+		webServer.RegisterRoutes(mux)
+	}
 	
-	return http.ListenAndServe(address, nil)
+	// All other requests go to proxy handler
+	mux.HandleFunc("/", p.handleRequest)
+
+	address := "0.0.0.0:8080" // This method shouldn't be used in multi-proxy mode
+	log.Printf("Starting proxy server in %s mode on %s", p.proxyConfig.Mode, address)
+	log.Printf("Proxying to %s://%s:%d", p.proxyConfig.Protocol, p.proxyConfig.TargetHost, p.proxyConfig.TargetPort)
+
+	return http.ListenAndServe(address, mux)
+}
+
+// HandleRequest implements the ProxyHandler interface
+func (p *ProxyEngine) HandleRequest(w http.ResponseWriter, r *http.Request) {
+	p.handleRequest(w, r)
 }
 
 func (p *ProxyEngine) handleRequest(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[%s] %s %s", r.Method, r.URL.Path, r.RemoteAddr)
-	
+
 	interaction, err := p.restHandler.ExtractRequest(r)
 	if err != nil {
 		log.Printf("Error extracting request: %v", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	
+
 	interaction.SessionID = p.session.ID
-	
+
+	// Broadcast request event if web server is available
+	if p.webServer != nil {
+		var requestHeaders map[string]interface{}
+		json.Unmarshal([]byte(interaction.RequestHeaders), &requestHeaders)
+		body := string(interaction.RequestBody)
+		p.webServer.BroadcastRequest(interaction.Method, interaction.Endpoint, p.session.SessionName, r.RemoteAddr, interaction.RequestID, requestHeaders, body)
+	}
+
 	targetURL := fmt.Sprintf("%s://%s:%d%s",
-		p.config.Proxy.Protocol,
-		p.config.Proxy.TargetHost,
-		p.config.Proxy.TargetPort,
+		p.proxyConfig.Protocol,
+		p.proxyConfig.TargetHost,
+		p.proxyConfig.TargetPort,
 		r.URL.RequestURI())
 
 	proxyReq, err := p.restHandler.CopyRequest(r, targetURL)
@@ -98,6 +133,14 @@ func (p *ProxyEngine) handleRequest(w http.ResponseWriter, r *http.Request) {
 	interaction.ResponseStatus = status
 	interaction.ResponseHeaders = headers
 	interaction.ResponseBody = body
+
+	// Broadcast response event if web server is available
+	if p.webServer != nil {
+		var responseHeaders map[string]interface{}
+		json.Unmarshal([]byte(interaction.ResponseHeaders), &responseHeaders)
+		responseBody := string(interaction.ResponseBody)
+		p.webServer.BroadcastResponse(interaction.Method, interaction.Endpoint, p.session.SessionName, r.RemoteAddr, interaction.RequestID, status, responseHeaders, responseBody)
+	}
 
 	if err := p.database.RecordInteraction(interaction); err != nil {
 		log.Printf("Error recording interaction: %v", err)

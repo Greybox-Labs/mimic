@@ -9,20 +9,18 @@ import (
 
 	"mimic/config"
 	"mimic/export"
-	"mimic/mock"
-	"mimic/proxy"
+	"mimic/server"
 	"mimic/storage"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	cfgFile        string
-	mode           string
-	sessionName    string
-	outputFile     string
-	inputFile      string
-	mergeStrategy  string
+	cfgFile       string
+	sessionName   string
+	outputFile    string
+	inputFile     string
+	mergeStrategy string
 )
 
 var rootCmd = &cobra.Command{
@@ -41,22 +39,18 @@ func Execute() error {
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is config.yaml)")
-	rootCmd.Flags().StringVar(&mode, "mode", "", "operation mode: record or mock")
-	
+
 	rootCmd.AddCommand(exportCmd)
 	rootCmd.AddCommand(importCmd)
 	rootCmd.AddCommand(listSessionsCmd)
 	rootCmd.AddCommand(clearCmd)
+	rootCmd.AddCommand(webCmd)
 }
 
 func runProxy() {
 	cfg, err := config.LoadConfig(cfgFile)
 	if err != nil {
 		log.Fatal("Failed to load config:", err)
-	}
-
-	if mode != "" {
-		cfg.Proxy.Mode = mode
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -69,21 +63,10 @@ func runProxy() {
 	}
 	defer db.Close()
 
-	var server interface{ Start() error }
-	
-	switch cfg.Proxy.Mode {
-	case "record":
-		server, err = proxy.NewProxyEngine(cfg, db)
-		if err != nil {
-			log.Fatal("Failed to create proxy engine:", err)
-		}
-	case "mock":
-		server, err = mock.NewMockEngine(cfg, db)
-		if err != nil {
-			log.Fatal("Failed to create mock engine:", err)
-		}
-	default:
-		log.Fatalf("Invalid mode: %s (must be 'record' or 'mock')", cfg.Proxy.Mode)
+	// Create and start the multi-proxy server
+	multiServer, err := server.NewMultiProxyServer(cfg, db)
+	if err != nil {
+		log.Fatal("Failed to create multi-proxy server:", err)
 	}
 
 	c := make(chan os.Signal, 1)
@@ -95,7 +78,7 @@ func runProxy() {
 		os.Exit(0)
 	}()
 
-	if err := server.Start(); err != nil {
+	if err := multiServer.Start(); err != nil {
 		log.Fatal("Server failed:", err)
 	}
 }
@@ -124,7 +107,7 @@ var exportCmd = &cobra.Command{
 		defer db.Close()
 
 		exportManager := export.NewExportManager(cfg, db)
-		
+
 		if err := exportManager.ExportSession(sessionName, outputFile); err != nil {
 			log.Fatal("Failed to export session:", err)
 		}
@@ -154,7 +137,7 @@ var importCmd = &cobra.Command{
 		defer db.Close()
 
 		exportManager := export.NewExportManager(cfg, db)
-		
+
 		if err := exportManager.ImportSession(inputFile, sessionName, mergeStrategy); err != nil {
 			log.Fatal("Failed to import session:", err)
 		}
@@ -192,10 +175,10 @@ var listSessionsCmd = &cobra.Command{
 		fmt.Printf("%-20s %-20s %-30s %s\n", "ID", "Name", "Created", "Description")
 		fmt.Println(string(make([]byte, 90)))
 		for _, session := range sessions {
-			fmt.Printf("%-20d %-20s %-30s %s\n", 
-				session.ID, 
-				session.SessionName, 
-				session.CreatedAt.Format("2006-01-02 15:04:05"), 
+			fmt.Printf("%-20d %-20s %-30s %s\n",
+				session.ID,
+				session.SessionName,
+				session.CreatedAt.Format("2006-01-02 15:04:05"),
 				session.Description)
 		}
 	},

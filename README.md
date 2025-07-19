@@ -11,6 +11,7 @@ A transparent proxy for intercepting, recording, and mocking API calls. Supports
 - **JSON Export/Import**: Version control integration and data portability
 - **Configurable Redaction**: Sensitive data protection
 - **Flexible Matching**: Exact, pattern, and fuzzy request matching
+- **Web UI**: Real-time monitoring and session management interface
 
 ## Installation
 
@@ -79,13 +80,22 @@ mimic --help
 Mimic uses a configuration file located at `~/.mimic/config.yaml` by default. The install script creates this file automatically, but you can also create it manually:
 
 ```yaml
-proxy:
-  mode: "record"  # record | mock
-  target_host: "api.example.com"
-  target_port: 443
+server:
   listen_host: "0.0.0.0"
   listen_port: 8080
-  protocol: "https"
+
+proxies:
+  api1:
+    mode: "record"  # record | mock
+    target_host: "api.example.com"
+    target_port: 443
+    protocol: "https"
+    session_name: "api1-session"
+  
+  api2:
+    mode: "mock"
+    protocol: "http"
+    session_name: "api2-mocks"
   
 database:
   path: "~/.mimic/recordings.db"
@@ -149,6 +159,34 @@ Export recorded session data to JSON:
 ```bash
 mimic export --session "my-session" --output "session-data.json"
 ```
+
+### Web UI
+
+Mimic includes a web-based interface for monitoring and managing sessions:
+
+```bash
+# Start web UI only
+mimic web
+
+# Start all configured proxies with web UI
+mimic
+
+# Start with a custom config file
+mimic --config custom-config.yaml
+```
+
+The web UI provides:
+- **Real-time monitoring**: View incoming requests and responses as they happen
+- **Session management**: Browse, inspect, and manage recorded sessions
+- **Interactive exploration**: Click on interactions to see full request/response details
+- **Live filtering**: Filter events by session or other criteria
+
+Access the web UI at `http://localhost:8080/` (same port as the server). Multiple named proxies are available at `/proxy/<proxy_name>/` paths.
+
+For example, with the configuration above:
+- Web UI: `http://localhost:8080/`
+- API1 proxy: `http://localhost:8080/proxy/api1/`
+- API2 proxy: `http://localhost:8080/proxy/api2/`
 
 ### Import Session
 
@@ -306,6 +344,71 @@ After installation, mimic creates a `~/.mimic` directory containing:
 ├── config.yaml    # User configuration
 ├── recordings.db  # SQLite database with recorded sessions
 └── .gitignore     # Git ignore file for database files
+```
+
+## Development
+
+This project uses [just](https://github.com/casey/just) as a command runner for common development tasks.
+
+### Setup Development Environment
+
+```bash
+# Install just (if not already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to ~/bin
+
+# Setup development environment
+just setup
+```
+
+### Common Development Commands
+
+```bash
+# Show all available commands
+just
+
+# Build the binary
+just build
+
+# Run quality checks (format, vet, lint, test)
+just check
+
+# Start all configured proxies
+just dev
+
+# Format code
+just fmt
+
+# Run tests
+just test
+
+# Run tests with coverage
+just test-coverage
+
+# Run linting
+just lint
+
+# Clean build artifacts
+just clean
+
+# Show project info
+just info
+```
+
+### Development Workflow
+
+1. Make your changes
+2. Run `just check` to ensure code quality
+3. Run `just test` to verify functionality
+4. Run `just build` to create the binary
+
+### Building for Multiple Platforms
+
+```bash
+# Build for all supported platforms
+just build-all
+
+# Create a release
+just release v1.0.0
 ```
 
 ## Contributing

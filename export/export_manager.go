@@ -126,10 +126,10 @@ func (e *ExportManager) convertToExportInteraction(interaction storage.Interacti
 	}
 
 	return storage.ExportInteraction{
-		RequestID:  interaction.RequestID,
-		Protocol:   interaction.Protocol,
-		Method:     interaction.Method,
-		Endpoint:   interaction.Endpoint,
+		RequestID: interaction.RequestID,
+		Protocol:  interaction.Protocol,
+		Method:    interaction.Method,
+		Endpoint:  interaction.Endpoint,
 		Request: storage.InteractionRequest{
 			Headers: requestHeaders,
 			Body:    requestBody,
