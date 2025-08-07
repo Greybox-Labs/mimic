@@ -1,0 +1,42 @@
+# Simple gRPC routing example
+# Shows how multiple gRPC services route to different backends automatically
+
+server:
+  port: 8080
+
+proxies:
+  # Route user service calls to user backend
+  user-service:
+    mode: "record"
+    protocol: "grpc"
+    target_host: "user-api.example.com"
+    target_port: 9090
+    session_name: "user-session"
+    service_pattern: ".*\\.userservice\\..*"  # Matches any package with userservice
+    
+  # Route order service calls to order backend  
+  order-service:
+    mode: "record"
+    protocol: "grpc"
+    target_host: "order-api.example.com"
+    target_port: 9091
+    session_name: "order-session"
+    service_pattern: ".*\\.orderservice\\..*"  # Matches any package with orderservice
+    
+  # Default route for everything else
+  default:
+    mode: "record"
+    protocol: "grpc"
+    target_host: "api.example.com"
+    target_port: 9090
+    session_name: "default-session"
+    is_default: true
+
+database:
+  path: "./mimic.db"
+
+# Usage:
+# 1. Start: mimic --config config-grpc-simple.yaml
+# 2. gRPC server runs on localhost:9080 (port 8080 + 1000)
+# 3. Web UI runs on http://localhost:8080/
+# 4. Test with: grpcurl -plaintext localhost:9080 your.userservice.UserService/GetUser

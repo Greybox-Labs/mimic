@@ -6,6 +6,7 @@ A transparent proxy for intercepting, recording, and mocking API calls. Supports
 
 - **Transparent Proxy Mode**: Intercepts and records API requests/responses
 - **Mock Server Mode**: Replays recorded interactions
+- **Replay Mode**: Tests recorded interactions against live servers with timing and validation
 - **Protocol Support**: REST (HTTP/HTTPS) and gRPC
 - **SQLite Storage**: Reliable local storage with ordering preservation
 - **JSON Export/Import**: Version control integration and data portability
@@ -234,6 +235,85 @@ Start the proxy in mock mode to serve recorded responses:
 mimic --mode mock
 ```
 
+### Replay Mode
+
+Replay recorded interactions against a live server for testing and validation:
+
+```bash
+# Replay a session against a target server
+mimic replay --session "my-session" --target-host api.example.com --target-port 443
+
+# Replay with different validation strategies
+mimic replay --session "api-tests" --target-host staging.api.com --matching-strategy fuzzy
+
+# Replay with concurrent requests (faster execution)
+mimic replay --session "load-test" --target-host localhost --target-port 8080 --concurrency 5
+
+# Replay ignoring original timing (fire all requests immediately)
+mimic replay --session "quick-test" --target-host api.test.com --ignore-timestamps
+
+# Replay with fail-fast mode (exit on first mismatch)
+mimic replay --session "critical-test" --target-host prod.api.com --fail-fast
+
+# Replay gRPC interactions
+mimic replay --session "grpc-session" --target-host localhost --target-port 9090 --protocol grpc
+
+# Replay gRPC interactions with larger message sizes (for production servers)
+mimic replay --session "grpc-session" --target-host grpc.production.com --protocol grpc --grpc-max-message-size 268435456
+
+# Replay gRPC interactions with insecure connection (for testing)
+mimic replay --session "grpc-session" --target-host localhost --target-port 9090 --protocol grpc --grpc-insecure
+```
+
+#### Replay Configuration Options
+
+- `--session`: Session name to replay (required)
+- `--target-host`: Target server hostname (required)
+- `--target-port`: Target server port (default: 443)
+- `--protocol`: Protocol to use - http, https, or grpc (default: https)
+- `--matching-strategy`: Response validation strategy:
+  - `exact`: Responses must match exactly (default)
+  - `fuzzy`: Allow minor differences in JSON structure
+  - `status_code`: Only validate HTTP status codes
+- `--fail-fast`: Exit on first validation failure (default: false)
+- `--timeout`: Request timeout in seconds (default: 30)
+- `--concurrency`: Max concurrent requests (default: 0 for sequential)
+- `--ignore-timestamps`: Skip timing-based replay (default: false)
+- `--insecure-skip-verify`: Skip TLS verification for HTTPS/gRPC (default: false)
+- `--grpc-max-message-size`: Max gRPC message size in bytes (default: 256MB)
+- `--grpc-insecure`: Use insecure gRPC connection without TLS (default: false)
+
+#### Replay via Server Mode
+
+You can also run replay through the HTTP server interface:
+
+```bash
+# Start server in replay mode
+mimic --mode replay --config config-replay.yaml
+
+# Trigger replay via HTTP
+curl -X POST "http://localhost:8080/proxy/replay-api/?session=my-session&target_host=api.example.com"
+```
+
+#### gRPC Replay
+
+gRPC replay works by:
+1. Establishing a gRPC client connection to the target server
+2. Replaying recorded gRPC calls using the stored raw protobuf message data
+3. Comparing responses based on the selected matching strategy
+4. Supporting both unary and streaming RPCs (though streaming is sequential only)
+
+**gRPC Replay Considerations:**
+- gRPC replay uses TLS by default for production servers; use `--grpc-insecure` for local testing
+- Raw protobuf message data is replayed exactly as recorded
+- Status codes are compared using gRPC status codes (0 = OK, etc.)
+- Metadata (gRPC headers) from the original requests is preserved and replayed
+- Default message size limit is 256MB; increase with `--grpc-max-message-size` for larger messages
+- For exact matching, both status code and response message must match
+- For fuzzy matching, only status codes are compared
+- Concurrent replay is supported for unary calls but not recommended for order-sensitive services
+- Use `--insecure-skip-verify` to skip TLS certificate verification for testing environments
+
 ### Export Session
 
 Export recorded session data to JSON:
@@ -353,7 +433,7 @@ mimic clear --session "my-session"
 
 ### Proxy Settings
 
-- `mode`: Operation mode (`record` or `mock`)
+- `mode`: Operation mode (`record`, `mock`, or `replay`)
 - `target_host`: Target server hostname (required in record mode)
 - `target_port`: Target server port (required in record mode)
 - `listen_host`: Proxy listen address (default: `0.0.0.0`)
@@ -372,6 +452,22 @@ mimic clear --session "my-session"
 - `matching_strategy`: Request matching strategy (`exact`, `pattern`, `fuzzy`)
 - `sequence_mode`: Response selection mode (`ordered`, `random`)
 - `not_found_response`: Default response for unmatched requests
+
+### Replay Settings
+
+- `target_host`: Target server hostname for replay
+- `target_port`: Target server port for replay
+- `protocol`: Target server protocol (`http`, `https`, or `grpc`)
+- `session_name`: Session to replay
+- `matching_strategy`: Response validation strategy (`exact`, `fuzzy`, `status_code`)
+- `fail_fast`: Exit on first mismatch (boolean)
+- `timeout_seconds`: Request timeout in seconds
+- `max_concurrency`: Maximum concurrent requests (0 for sequential)
+- `ignore_timestamps`: Skip timing-based replay (boolean)
+- `insecure_skip_verify`: Skip TLS verification (boolean)
+- `grpc_max_message_size`: Max gRPC message size in bytes
+- `grpc_max_header_size`: Max gRPC header size in bytes
+- `grpc_insecure`: Use insecure gRPC connection (boolean)
 
 ### Export Settings
 

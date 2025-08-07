@@ -42,7 +42,7 @@ func Execute() error {
 func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is config.yaml)")
 	rootCmd.PersistentFlags().BoolVar(&debugMode, "debug", false, "enable debug logging")
-	rootCmd.PersistentFlags().StringVar(&modeFlag, "mode", "", "operation mode (record or mock) - overrides config file setting")
+	rootCmd.PersistentFlags().StringVar(&modeFlag, "mode", "", "operation mode (record, mock, or replay) - overrides config file setting")
 
 	rootCmd.AddCommand(exportCmd)
 	rootCmd.AddCommand(importCmd)

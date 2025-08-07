@@ -20,8 +20,8 @@ type MultiProxyServer struct {
 	database       *storage.Database
 	webServer      *web.Server
 	proxies        map[string]ProxyHandler
-	grpcServer     *grpc.Server      // Single gRPC server with routing
-	grpcRouter     *proxy.GRPCRouter // For gRPC record proxies
+	grpcServer     *grpc.Server         // Single gRPC server with routing
+	grpcRouter     *proxy.GRPCRouter    // For gRPC record proxies
 	grpcMockRouter *mock.GRPCMockRouter // For gRPC mock proxies
 }
 
@@ -69,6 +69,13 @@ func NewMultiProxyServer(cfg *config.Config, db *storage.Database) (*MultiProxyS
 			} else {
 				return nil, fmt.Errorf("failed to create mock engine for '%s': %w", name, err)
 			}
+		case "replay":
+			// For replay mode, we create a special handler that provides replay endpoints
+			if replayHandler, err := NewReplayHandler(&cfg.Replay, db, webServer); err == nil {
+				handler = replayHandler
+			} else {
+				return nil, fmt.Errorf("failed to create replay handler for '%s': %w", name, err)
+			}
 		default:
 			return nil, fmt.Errorf("invalid global mode: %s", cfg.Mode)
 		}
@@ -77,8 +84,8 @@ func NewMultiProxyServer(cfg *config.Config, db *storage.Database) (*MultiProxyS
 		log.Printf("Initialized HTTP proxy '%s' in %s mode", name, cfg.Mode)
 	}
 
-	// Initialize single gRPC server with routing (if any gRPC proxies exist)
-	if len(grpcProxies) > 0 {
+	// Initialize single gRPC server with routing (if any gRPC proxies exist and not in replay mode)
+	if len(grpcProxies) > 0 && cfg.Mode != "replay" {
 		var unknownServiceHandler grpc.StreamHandler
 
 		// Create gRPC router for record mode
@@ -89,7 +96,7 @@ func NewMultiProxyServer(cfg *config.Config, db *storage.Database) (*MultiProxyS
 			}
 			server.grpcRouter = router
 			unknownServiceHandler = router.GetUnknownServiceHandler()
-			
+
 		}
 
 		// Create gRPC mock router for mock mode
@@ -127,51 +134,51 @@ func (s *MultiProxyServer) Start() error {
 	var grpcAddress string
 	if s.grpcServer != nil {
 		grpcAddress = fmt.Sprintf("%s:%d", s.config.Server.ListenHost, s.config.Server.GRPCPort)
-		
+
 		go func() {
 			lis, err := net.Listen("tcp", grpcAddress)
 			if err != nil {
 				log.Printf("Failed to start gRPC router server on %s: %v", grpcAddress, err)
 				return
 			}
-			
+
 			log.Printf("gRPC router server listening on %s", grpcAddress)
-			
+
 			// Log route information
 			if s.grpcRouter != nil {
 				routes := s.grpcRouter.GetRoutes()
 				for _, route := range routes {
 					if route.Config.ServicePattern != "" {
-						log.Printf("  → Route '%s': %s -> %s:%d", 
-							route.Name, 
-							route.Config.ServicePattern, 
-							route.Config.TargetHost, 
+						log.Printf("  → Route '%s': %s -> %s:%d",
+							route.Name,
+							route.Config.ServicePattern,
+							route.Config.TargetHost,
 							route.Config.TargetPort)
 					} else {
-						log.Printf("  → Route '%s': (default) -> %s:%d", 
-							route.Name, 
-							route.Config.TargetHost, 
+						log.Printf("  → Route '%s': (default) -> %s:%d",
+							route.Name,
+							route.Config.TargetHost,
 							route.Config.TargetPort)
 					}
 				}
 			}
-			
+
 			if s.grpcMockRouter != nil {
 				routes := s.grpcMockRouter.GetRoutes()
 				for _, route := range routes {
 					if route.Config.ServicePattern != "" {
-						log.Printf("  → Mock Route '%s': %s -> session '%s'", 
-							route.Name, 
-							route.Config.ServicePattern, 
+						log.Printf("  → Mock Route '%s': %s -> session '%s'",
+							route.Name,
+							route.Config.ServicePattern,
 							route.Session.SessionName)
 					} else {
-						log.Printf("  → Mock Route '%s': (default) -> session '%s'", 
-							route.Name, 
+						log.Printf("  → Mock Route '%s': (default) -> session '%s'",
+							route.Name,
 							route.Session.SessionName)
 					}
 				}
 			}
-			
+
 			if err := s.grpcServer.Serve(lis); err != nil {
 				log.Printf("gRPC router server failed: %v", err)
 			}
@@ -189,7 +196,7 @@ func (s *MultiProxyServer) Start() error {
 
 	for name, proxyHandler := range s.proxies {
 		proxyPath := fmt.Sprintf("/proxy/%s/", name)
-		
+
 		// Regular HTTP proxy
 		mux.HandleFunc(proxyPath, func(w http.ResponseWriter, r *http.Request) {
 			// Strip the proxy path prefix and forward to the proxy handler
@@ -219,14 +226,14 @@ func (s *MultiProxyServer) Start() error {
 	}
 
 	httpAddress := fmt.Sprintf("%s:%d", s.config.Server.ListenHost, s.config.Server.ListenPort)
-	
+
 	log.Printf("Starting multi-proxy server")
 	log.Printf("Web UI available at http://%s/", httpAddress)
-	
+
 	if httpProxyCount > 0 {
 		log.Printf("HTTP proxies (%d) available at http://%s/proxy/<name>/", httpProxyCount, httpAddress)
 	}
-	
+
 	if s.grpcServer != nil {
 		log.Printf("gRPC router server available at %s", grpcAddress)
 		log.Printf("gRPC info available at http://%s/grpc/info", httpAddress)
