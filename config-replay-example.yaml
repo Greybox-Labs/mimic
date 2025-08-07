@@ -1,0 +1,50 @@
+mode: replay
+
+server:
+  listen_host: "0.0.0.0"
+  listen_port: 8080
+
+proxies:
+  replay-api:
+    protocol: "https"
+    session_name: "test-session"
+
+replay:
+  target_host: "httpbin.org"
+  target_port: 443
+  protocol: "https"
+  session_name: "test-session"
+  matching_strategy: "exact"  # exact, fuzzy, or status_code
+  fail_fast: false            # true to exit on first failure, false to collect all errors
+  timeout_seconds: 30
+  max_concurrency: 0          # 0 for sequential, >0 for concurrent replay
+  ignore_timestamps: false    # true to ignore original timing
+
+database:
+  path: "~/.mimic/recordings.db"
+
+recording:
+  session_name: "test-session"
+  capture_headers: true
+  capture_body: true
+  redact_patterns:
+    - "Authorization: Bearer .*"
+    - "X-API-Key: .*"
+
+mock:
+  matching_strategy: "exact"
+  sequence_mode: "ordered"
+  not_found_response:
+    status: 404
+    body:
+      error: "Recording not found"
+
+grpc:
+  reflection_enabled: true
+  max_message_size: 67108864   # 64MB
+  max_header_size: 67108864    # 64MB
+
+export:
+  format: "json"
+  pretty_print: true
+  compress: false

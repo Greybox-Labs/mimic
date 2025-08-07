@@ -57,17 +57,17 @@ func NewProxyEngineWithBroadcaster(proxyConfig config.ProxyConfig, db *storage.D
 	if proxyConfig.Protocol == "grpc" {
 		// Use raw proxy for better compatibility
 		rawProxy := NewRawGRPCProxy(&proxyConfig, "record", db, session, grpcHandler)
-		
+
 		// Set web broadcaster if available
 		if webServer != nil {
 			rawProxy.SetWebBroadcaster(webServer)
 		}
 
 		grpcServer = grpc.NewServer(
-			grpc.MaxRecvMsgSize(64*1024*1024),       // 64MB max receive message size
-			grpc.MaxSendMsgSize(64*1024*1024),       // 64MB max send message size
-			grpc.MaxHeaderListSize(64*1024*1024),    // 64MB max header list size
-			grpc.InitialWindowSize(64*1024*1024),    // 64MB initial window
+			grpc.MaxRecvMsgSize(64*1024*1024),        // 64MB max receive message size
+			grpc.MaxSendMsgSize(64*1024*1024),        // 64MB max send message size
+			grpc.MaxHeaderListSize(64*1024*1024),     // 64MB max header list size
+			grpc.InitialWindowSize(64*1024*1024),     // 64MB initial window
 			grpc.InitialConnWindowSize(64*1024*1024), // 64MB connection window
 			grpc.UnknownServiceHandler(rawProxy.GetUnknownServiceHandler()),
 		)

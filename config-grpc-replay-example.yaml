@@ -1,0 +1,55 @@
+mode: replay
+
+server:
+  listen_host: "0.0.0.0"
+  listen_port: 8080
+  grpc_port: 9080
+
+proxies:
+  grpc-replay:
+    protocol: "grpc"
+    session_name: "grpc-session"
+
+replay:
+  target_host: "localhost"
+  target_port: 9090
+  protocol: "grpc"
+  session_name: "grpc-session"
+  matching_strategy: "exact"  # exact, fuzzy, or status_code
+  fail_fast: false            # true to exit on first failure, false to collect all errors
+  timeout_seconds: 30
+  max_concurrency: 0          # 0 for sequential, >0 for concurrent replay
+  ignore_timestamps: false    # true to ignore original timing
+  insecure_skip_verify: false # skip TLS verification
+  grpc_max_message_size: 268435456  # 256MB
+  grpc_max_header_size: 16777216    # 16MB
+  grpc_insecure: false        # use insecure gRPC connection
+
+database:
+  path: "~/.mimic/recordings.db"
+
+recording:
+  session_name: "grpc-session"
+  capture_headers: true
+  capture_body: true
+  redact_patterns:
+    - "authorization: Bearer .*"
+    - "x-api-key: .*"
+
+mock:
+  matching_strategy: "exact"
+  sequence_mode: "ordered"
+  not_found_response:
+    status: 404
+    body:
+      error: "Recording not found"
+
+grpc:
+  reflection_enabled: true
+  max_message_size: 67108864   # 64MB
+  max_header_size: 67108864    # 64MB
+
+export:
+  format: "json"
+  pretty_print: true
+  compress: false

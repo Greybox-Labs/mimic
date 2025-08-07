@@ -1,0 +1,88 @@
+# Example configuration for gRPC path-based routing
+# Single gRPC server handling multiple services with different backends
+
+server:
+  port: 8080
+  
+proxies:
+  # User service - routes all com.example.userservice.* calls
+  user-service:
+    mode: "record"
+    protocol: "grpc"
+    target_host: "user-api.internal.com"
+    target_port: 9090
+    session_name: "user-service-session"
+    service_pattern: "com\\.example\\.userservice\\..*"  # Regex: com.example.userservice.*
+    
+  # Order service - routes all com.example.orderservice.* calls  
+  order-service:
+    mode: "record"
+    protocol: "grpc"
+    target_host: "order-api.internal.com" 
+    target_port: 9091
+    session_name: "order-service-session"
+    service_pattern: "com\\.example\\.orderservice\\..*"  # Regex: com.example.orderservice.*
+    
+  # Payment service - routes all payment related calls
+  payment-service:
+    mode: "record"
+    protocol: "grpc"
+    target_host: "payment-api.internal.com"
+    target_port: 9092
+    session_name: "payment-service-session"
+    service_pattern: "com\\.example\\.paymentservice\\..*"  # Regex: com.example.paymentservice.*
+    
+  # Method-specific routing - route only specific methods
+  health-checks:
+    mode: "record"
+    protocol: "grpc"
+    target_host: "health.internal.com"
+    target_port: 9093
+    session_name: "health-session"
+    method_pattern: "Check|Watch"  # Only route Check and Watch methods
+    
+  # Default/fallback route - catches everything else
+  default-backend:
+    mode: "record"
+    protocol: "grpc"
+    target_host: "default-api.internal.com"
+    target_port: 9090
+    session_name: "default-session"
+    is_default: true  # This route catches unmatched requests
+
+database:
+  path: "./mimic.db"
+  connection_pool_size: 10
+
+grpc:
+  reflection_enabled: true
+  
+# Usage Examples:
+# 
+# 1. Start mimic with routing config:
+#    mimic --config config-grpc-routing-example.yaml
+#
+# 2. gRPC calls will be routed based on service patterns to localhost:9080 (HTTP port + 1000):
+#    
+#    # This goes to user-api.internal.com:9090
+#    grpcurl -plaintext localhost:9080 com.example.userservice.UserService/GetUser
+#    
+#    # This goes to order-api.internal.com:9091  
+#    grpcurl -plaintext localhost:9080 com.example.orderservice.OrderService/CreateOrder
+#    
+#    # This goes to payment-api.internal.com:9092
+#    grpcurl -plaintext localhost:9080 com.example.paymentservice.PaymentService/ProcessPayment
+#    
+#    # Health checks go to health.internal.com:9093
+#    grpcurl -plaintext localhost:9080 grpc.health.v1.Health/Check
+#    
+#    # Anything else goes to default-api.internal.com:9090
+#    grpcurl -plaintext localhost:9080 some.other.service.SomeService/SomeMethod
+#
+# 3. Web UI and gRPC info available at:
+#    # Web UI: http://localhost:8080/
+#    # gRPC info: http://localhost:8080/grpc/info
+
+export:
+  format: "json"
+  pretty_print: true
