@@ -83,6 +83,7 @@ Mimic uses a configuration file located at `~/.mimic/config.yaml` by default. Th
 server:
   listen_host: "0.0.0.0"
   listen_port: 8080
+  grpc_port: 9080  # Optional: defaults to listen_port + 1000
 
 proxies:
   api1:
@@ -122,6 +123,87 @@ export:
   pretty_print: true
   compress: false
 ```
+
+## gRPC Support
+
+Mimic now provides full gRPC proxy functionality for recording and replaying gRPC interactions. This includes support for unary and streaming RPCs with automatic protobuf message handling.
+
+### gRPC Configuration
+
+Configure gRPC proxies by setting the protocol to "grpc":
+
+```yaml
+proxies:
+  grpc-api:
+    mode: "record"       # or "mock"
+    protocol: "grpc"     # Set to grpc for gRPC support
+    target_host: "api.grpc-service.com"
+    target_port: 9090
+    session_name: "grpc-session"
+
+grpc:
+  proto_paths:           # Paths to .proto files (optional)
+    - "./protos"
+    - "/usr/local/include"
+  reflection_enabled: true  # Enable gRPC reflection (default: true)
+```
+
+### gRPC Recording
+
+Record gRPC interactions by running mimic in record mode with a gRPC-configured proxy:
+
+```bash
+# Start gRPC recording
+mimic --config config-grpc.yaml
+
+# Your gRPC client should connect to localhost:9080 (configurable grpc_port) instead of the original server
+# Mimic will forward the calls and record all interactions
+# Example: if HTTP server runs on :8080, gRPC proxy will be on :9080 by default
+```
+
+### gRPC Mocking
+
+Replay recorded gRPC interactions:
+
+```bash
+# Switch to mock mode in your config or use command line
+mimic --mode mock --config config-grpc.yaml
+```
+
+### gRPC Features
+
+- **Unary RPCs**: Full support for request/response recording and replay
+- **Streaming RPCs**: Support for server streaming, client streaming, and bidirectional streaming
+- **Metadata Handling**: Records and replays gRPC metadata (headers)
+- **Protobuf Messages**: Automatically converts protobuf messages to JSON for storage
+- **Service Reflection**: Supports gRPC server reflection for dynamic service discovery
+- **Error Handling**: Records and replays gRPC status codes and error messages
+
+### Example gRPC Workflow
+
+1. **Record gRPC calls**:
+   ```bash
+   # Start mimic with gRPC proxy configuration
+   mimic --config config-grpc-example.yaml
+   
+   # Your gRPC client should connect to the gRPC proxy port (configurable grpc_port)
+   # If HTTP server is on :8080, gRPC proxy will be on :9080 by default
+   buf curl --schema buf.build/your/api --protocol grpc localhost:9080/your.service/Method
+   ```
+
+2. **Export recorded session**:
+   ```bash
+   mimic export --session "grpc-session" --output "grpc-mocks.json"
+   ```
+
+3. **Use in tests**:
+   ```bash
+   # Import the recorded session
+   mimic import --input "grpc-mocks.json" --session "test-grpc"
+   
+   # Start mock server (gRPC mock will be available on port 9080)
+   mimic --mode mock --config config-grpc-example.yaml
+   ```
 
 ## Usage
 

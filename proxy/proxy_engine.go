@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"time"
 
+	"google.golang.org/grpc"
 	"mimic/config"
 	"mimic/storage"
 )
@@ -15,8 +17,10 @@ type ProxyEngine struct {
 	proxyConfig *config.ProxyConfig
 	database    *storage.Database
 	restHandler *RESTHandler
+	grpcHandler *GRPCHandler
 	session     *storage.Session
 	client      *http.Client
+	grpcServer  *grpc.Server
 	webServer   WebBroadcaster
 }
 
@@ -36,6 +40,7 @@ func NewProxyEngineWithBroadcaster(proxyConfig config.ProxyConfig, db *storage.D
 	}
 
 	restHandler := NewRESTHandler([]string{}) // Use empty redact patterns for now
+	grpcHandler := NewGRPCHandler([]string{}) // Use empty redact patterns for now
 
 	client := &http.Client{
 		Timeout: 30 * time.Second,
@@ -47,34 +52,80 @@ func NewProxyEngineWithBroadcaster(proxyConfig config.ProxyConfig, db *storage.D
 		},
 	}
 
+	var grpcServer *grpc.Server
+
+	if proxyConfig.Protocol == "grpc" {
+		// Use raw proxy for better compatibility
+		rawProxy := NewRawGRPCProxy(&proxyConfig, "record", db, session, grpcHandler)
+		
+		// Set web broadcaster if available
+		if webServer != nil {
+			rawProxy.SetWebBroadcaster(webServer)
+		}
+
+		grpcServer = grpc.NewServer(
+			grpc.MaxRecvMsgSize(64*1024*1024),       // 64MB max receive message size
+			grpc.MaxSendMsgSize(64*1024*1024),       // 64MB max send message size
+			grpc.MaxHeaderListSize(64*1024*1024),    // 64MB max header list size
+			grpc.InitialWindowSize(64*1024*1024),    // 64MB initial window
+			grpc.InitialConnWindowSize(64*1024*1024), // 64MB connection window
+			grpc.UnknownServiceHandler(rawProxy.GetUnknownServiceHandler()),
+		)
+	}
+
 	return &ProxyEngine{
 		proxyConfig: &proxyConfig,
 		database:    db,
 		restHandler: restHandler,
+		grpcHandler: grpcHandler,
 		session:     session,
 		client:      client,
+		grpcServer:  grpcServer,
 		webServer:   webServer,
 	}, nil
 }
 
-
-
 func (p *ProxyEngine) Start() error {
+	address := "0.0.0.0:8080" // This method shouldn't be used in multi-proxy mode
+
+	if p.proxyConfig.Protocol == "grpc" {
+		return p.startGRPCServer(address)
+	} else {
+		return p.startHTTPServer(address)
+	}
+}
+
+func (p *ProxyEngine) startHTTPServer(address string) error {
 	mux := http.NewServeMux()
-	
+
 	// Register web UI routes if webServer is available
 	if webServer, ok := p.webServer.(interface{ RegisterRoutes(*http.ServeMux) }); ok {
 		webServer.RegisterRoutes(mux)
 	}
-	
+
 	// All other requests go to proxy handler
 	mux.HandleFunc("/", p.handleRequest)
 
-	address := "0.0.0.0:8080" // This method shouldn't be used in multi-proxy mode
-	log.Printf("Starting proxy server in %s mode on %s", p.proxyConfig.Mode, address)
+	log.Printf("Starting HTTP proxy server on %s", address)
 	log.Printf("Proxying to %s://%s:%d", p.proxyConfig.Protocol, p.proxyConfig.TargetHost, p.proxyConfig.TargetPort)
 
 	return http.ListenAndServe(address, mux)
+}
+
+func (p *ProxyEngine) startGRPCServer(address string) error {
+	if p.grpcServer == nil {
+		return fmt.Errorf("gRPC server not initialized")
+	}
+
+	lis, err := net.Listen("tcp", address)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", address, err)
+	}
+
+	log.Printf("Starting gRPC proxy server on %s", address)
+	log.Printf("Proxying to %s://%s:%d", p.proxyConfig.Protocol, p.proxyConfig.TargetHost, p.proxyConfig.TargetPort)
+
+	return p.grpcServer.Serve(lis)
 }
 
 // HandleRequest implements the ProxyHandler interface
@@ -154,5 +205,12 @@ func (p *ProxyEngine) handleRequest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *ProxyEngine) Stop() error {
+	if p.grpcServer != nil {
+		p.grpcServer.GracefulStop()
+	}
 	return nil
+}
+
+func (p *ProxyEngine) GetGRPCServer() *grpc.Server {
+	return p.grpcServer
 }

@@ -9,26 +9,31 @@ import (
 )
 
 type Config struct {
-	Server    ServerConfig               `mapstructure:"server"`
-	Proxies   map[string]ProxyConfig     `mapstructure:"proxies"`
-	Database  DatabaseConfig             `mapstructure:"database"`
-	Recording RecordingConfig            `mapstructure:"recording"`
-	Mock      MockConfig                 `mapstructure:"mock"`
-	GRPC      GRPCConfig                 `mapstructure:"grpc"`
-	Export    ExportConfig               `mapstructure:"export"`
+	Mode      string                 `mapstructure:"mode"`      // Global mode: "record" or "mock"
+	Server    ServerConfig           `mapstructure:"server"`
+	Proxies   map[string]ProxyConfig `mapstructure:"proxies"`
+	Database  DatabaseConfig         `mapstructure:"database"`
+	Recording RecordingConfig        `mapstructure:"recording"`
+	Mock      MockConfig             `mapstructure:"mock"`
+	GRPC      GRPCConfig             `mapstructure:"grpc"`
+	Export    ExportConfig           `mapstructure:"export"`
 }
 
 type ServerConfig struct {
 	ListenHost string `mapstructure:"listen_host"`
 	ListenPort int    `mapstructure:"listen_port"`
+	GRPCPort   int    `mapstructure:"grpc_port"`   // Port for gRPC server (defaults to listen_port + 1000)
 }
 
 type ProxyConfig struct {
-	Mode        string `mapstructure:"mode"`
-	TargetHost  string `mapstructure:"target_host"`
-	TargetPort  int    `mapstructure:"target_port"`
-	Protocol    string `mapstructure:"protocol"`
-	SessionName string `mapstructure:"session_name"`
+	TargetHost     string `mapstructure:"target_host"`
+	TargetPort     int    `mapstructure:"target_port"`
+	Protocol       string `mapstructure:"protocol"`
+	SessionName    string `mapstructure:"session_name"`
+	// gRPC routing patterns (optional)
+	ServicePattern string `mapstructure:"service_pattern"` // Regex pattern for service names
+	MethodPattern  string `mapstructure:"method_pattern"`  // Regex pattern for method names  
+	IsDefault      bool   `mapstructure:"is_default"`      // Whether this is the default/fallback route
 }
 
 type DatabaseConfig struct {
@@ -57,6 +62,8 @@ type NotFoundResponseConfig struct {
 type GRPCConfig struct {
 	ProtoPaths        []string `mapstructure:"proto_paths"`
 	ReflectionEnabled bool     `mapstructure:"reflection_enabled"`
+	MaxMessageSize    int      `mapstructure:"max_message_size"`    // Max message size in bytes
+	MaxHeaderSize     int      `mapstructure:"max_header_size"`     // Max header list size in bytes
 }
 
 type ExportConfig struct {
@@ -115,8 +122,11 @@ func setDefaults() {
 	homeDir, _ := os.UserHomeDir()
 	defaultDBPath := filepath.Join(homeDir, ".mimic", "recordings.db")
 
+	viper.SetDefault("mode", "record")
+	
 	viper.SetDefault("server.listen_host", "0.0.0.0")
 	viper.SetDefault("server.listen_port", 8080)
+	viper.SetDefault("server.grpc_port", 9080) // Default to 9080
 
 	viper.SetDefault("database.path", defaultDBPath)
 	viper.SetDefault("database.connection_pool_size", 10)
@@ -133,6 +143,8 @@ func setDefaults() {
 	})
 
 	viper.SetDefault("grpc.reflection_enabled", true)
+	viper.SetDefault("grpc.max_message_size", 64*1024*1024) // 64MB
+	viper.SetDefault("grpc.max_header_size", 64*1024*1024)  // 64MB
 
 	viper.SetDefault("export.format", "json")
 	viper.SetDefault("export.pretty_print", true)
@@ -144,13 +156,14 @@ func getDefaultConfig() *Config {
 	defaultDBPath := filepath.Join(homeDir, ".mimic", "recordings.db")
 
 	return &Config{
+		Mode: "record",
 		Server: ServerConfig{
 			ListenHost: "0.0.0.0",
 			ListenPort: 8080,
+			GRPCPort:   9080,
 		},
 		Proxies: map[string]ProxyConfig{
 			"default": {
-				Mode:        "record",
 				Protocol:    "http",
 				SessionName: "default",
 			},
@@ -176,6 +189,8 @@ func getDefaultConfig() *Config {
 		GRPC: GRPCConfig{
 			ProtoPaths:        []string{},
 			ReflectionEnabled: true,
+			MaxMessageSize:    64 * 1024 * 1024, // 64MB
+			MaxHeaderSize:     64 * 1024 * 1024, // 64MB
 		},
 		Export: ExportConfig{
 			Format:      "json",
@@ -186,20 +201,32 @@ func getDefaultConfig() *Config {
 }
 
 func (c *Config) Validate() error {
+	// Validate global mode
+	if c.Mode != "record" && c.Mode != "mock" {
+		return fmt.Errorf("invalid mode: %s (must be 'record' or 'mock')", c.Mode)
+	}
+
+	// Validate server config
 	if c.Server.ListenPort <= 0 || c.Server.ListenPort > 65535 {
 		return fmt.Errorf("invalid server listen_port: %d", c.Server.ListenPort)
+	}
+
+	// Set default gRPC port if not configured
+	if c.Server.GRPCPort == 0 {
+		c.Server.GRPCPort = c.Server.ListenPort + 1000
+	}
+
+	if c.Server.GRPCPort <= 0 || c.Server.GRPCPort > 65535 {
+		return fmt.Errorf("invalid server grpc_port: %d", c.Server.GRPCPort)
 	}
 
 	if len(c.Proxies) == 0 {
 		return fmt.Errorf("at least one proxy must be configured")
 	}
 
+	// Validate proxy configs
 	for name, proxy := range c.Proxies {
-		if proxy.Mode != "record" && proxy.Mode != "mock" {
-			return fmt.Errorf("invalid proxy mode for '%s': %s (must be 'record' or 'mock')", name, proxy.Mode)
-		}
-
-		if proxy.Mode == "record" && (proxy.TargetHost == "" || proxy.TargetPort == 0) {
+		if c.Mode == "record" && (proxy.TargetHost == "" || proxy.TargetPort == 0) {
 			return fmt.Errorf("target_host and target_port are required in record mode for proxy '%s'", name)
 		}
 
@@ -216,6 +243,7 @@ func (c *Config) Validate() error {
 }
 
 func SaveConfig(config *Config, path string) error {
+	viper.Set("mode", config.Mode)
 	viper.Set("server", config.Server)
 	viper.Set("proxies", config.Proxies)
 	viper.Set("database", config.Database)

@@ -2,6 +2,7 @@ class MimicUI {
     constructor() {
         this.ws = null;
         this.events = [];
+        this.requestPairs = new Map(); // Track request/response pairs
         this.maxEvents = 1000;
         this.autoScroll = true;
         this.currentSession = null;
@@ -72,18 +73,40 @@ class MimicUI {
     }
 
     addEvent(message) {
-        this.events.unshift({
+        const eventData = {
             id: Date.now() + Math.random(),
             timestamp: new Date(message.timestamp),
+            type: message.type,
             ...message.data
-        });
+        };
 
-        // Limit the number of events
-        if (this.events.length > this.maxEvents) {
-            this.events = this.events.slice(0, this.maxEvents);
+        if (message.type === 'request') {
+            // Store the request and create initial event
+            this.requestPairs.set(eventData.request_id, {
+                request: eventData,
+                response: null,
+                timestamp: eventData.timestamp,
+                isComplete: false
+            });
+        } else if (message.type === 'response') {
+            // Update existing request with response
+            const pair = this.requestPairs.get(eventData.request_id);
+            if (pair) {
+                pair.response = eventData;
+                pair.isComplete = true;
+                pair.duration = eventData.timestamp - pair.request.timestamp;
+            } else {
+                // Response without matching request (shouldn't happen but handle gracefully)
+                this.requestPairs.set(eventData.request_id, {
+                    request: null,
+                    response: eventData,
+                    timestamp: eventData.timestamp,
+                    isComplete: true
+                });
+            }
         }
 
-        this.updateEventsList();
+        this.updateEventsFromPairs();
         this.updateEventCount();
 
         // Auto-scroll if enabled
@@ -91,6 +114,15 @@ class MimicUI {
             const eventsList = document.getElementById('events-list');
             eventsList.scrollTop = 0;
         }
+    }
+
+    updateEventsFromPairs() {
+        // Convert request/response pairs to display events
+        this.events = Array.from(this.requestPairs.values())
+            .sort((a, b) => b.timestamp - a.timestamp)
+            .slice(0, this.maxEvents);
+        
+        this.updateEventsList();
     }
 
     updateEventsList() {
@@ -105,37 +137,83 @@ class MimicUI {
         eventsList.innerHTML = eventsHtml;
     }
 
-    renderEvent(event) {
-        const timestamp = event.timestamp.toLocaleTimeString();
-        const statusClass = event.status ? `status-${Math.floor(event.status / 100)}xx` : '';
+    renderEvent(pair) {
+        const timestamp = pair.timestamp.toLocaleTimeString();
+        const request = pair.request;
+        const response = pair.response;
+        
+        if (!request && !response) return '';
+        
+        const event = request || response;
+        const statusClass = response?.status ? `status-${Math.floor(response.status / 100)}xx` : '';
         const methodClass = `method-${event.method}`;
         
+        // Determine if this is a mock response
+        const isMock = this.isMockResponse(pair);
+        const mockBadge = isMock ? '<span class="mock-badge">MOCK</span>' : '';
+        
+        // Create duration display
+        const durationText = pair.duration ? `${pair.duration}ms` : pair.isComplete ? '0ms' : 'pending...';
+        
         let bodyHtml = '';
-        if (event.body && event.body.trim()) {
-            const displayBody = event.body.length > 200 ? 
-                event.body.substring(0, 200) + '...' : event.body;
-            bodyHtml = `<div class="event-body">${this.escapeHtml(displayBody)}</div>`;
+        if (request?.body && request.body.trim()) {
+            const displayBody = request.body.length > 100 ? 
+                request.body.substring(0, 100) + '...' : request.body;
+            bodyHtml = `<div class="event-body">Request: ${this.escapeHtml(displayBody)}</div>`;
+        }
+        if (response?.body && response.body.trim()) {
+            const displayBody = response.body.length > 100 ? 
+                response.body.substring(0, 100) + '...' : response.body;
+            bodyHtml += `<div class="event-body">Response: ${this.escapeHtml(displayBody)}</div>`;
         }
 
         return `
-            <div class="event-item">
+            <div class="event-item ${isMock ? 'mock-event' : ''}">
                 <div class="event-header">
                     <div>
                         <span class="event-method ${methodClass}">${event.method}</span>
                         <span class="event-endpoint">${event.endpoint}</span>
-                        ${event.status ? `<span class="event-status ${statusClass}">${event.status}</span>` : ''}
+                        ${response?.status ? `<span class="event-status ${statusClass}">${response.status}</span>` : '<span class="event-status pending">PENDING</span>'}
+                        ${mockBadge}
                     </div>
                     <div class="event-timestamp">${timestamp}</div>
                 </div>
                 <div class="event-meta">
                     <span>Session: ${event.session_name}</span>
-                    <span>From: ${event.remote_addr}</span>
-                    <span>Type: ${event.type}</span>
+                    <span>From: ${event.remote_addr || 'unknown'}</span>
+                    <span>Duration: ${durationText}</span>
                     ${event.request_id ? `<span>ID: ${event.request_id.substring(0, 8)}...</span>` : ''}
                 </div>
                 ${bodyHtml}
             </div>
         `;
+    }
+
+    isMockResponse(pair) {
+        // Mock detection logic:
+        // 1. Check if response came very quickly (< 50ms) indicating local mock
+        // 2. Check for mock-specific session names
+        // 3. Check for mock indicators in headers/metadata
+        
+        if (!pair.response) return false;
+        
+        // Fast response time suggests mock
+        if (pair.duration !== undefined && pair.duration < 50) {
+            return true;
+        }
+        
+        // Check session name for mock indicators
+        const sessionName = pair.request?.session_name || pair.response?.session_name || '';
+        if (sessionName.includes('mock') || sessionName.includes('test')) {
+            return true;
+        }
+        
+        // Check for gRPC mock responses (they come from local mock engine)
+        if (pair.request?.remote_addr === 'grpc-client') {
+            return true;
+        }
+        
+        return false;
     }
 
     updateEventCount() {
@@ -158,6 +236,7 @@ class MimicUI {
         // Clear events button
         document.getElementById('clear-events').addEventListener('click', () => {
             this.events = [];
+            this.requestPairs.clear();
             this.updateEventsList();
             this.updateEventCount();
         });
@@ -410,6 +489,7 @@ class MimicUI {
                 this.loadSessions();
                 this.loadInteractions();
                 this.events = [];
+                this.requestPairs.clear();
                 this.updateEventsList();
                 this.updateEventCount();
             }

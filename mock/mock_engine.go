@@ -6,19 +6,61 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"mimic/config"
 	"mimic/proxy"
 	"mimic/storage"
 )
 
+// mockRawMessage for handling raw gRPC message data in mock responses  
+type mockRawMessage struct {
+	Data []byte
+}
+
+// Reset implements proto.Message
+func (m *mockRawMessage) Reset() {
+	m.Data = nil
+}
+
+// String implements proto.Message
+func (m *mockRawMessage) String() string {
+	return fmt.Sprintf("mockRawMessage{%d bytes}", len(m.Data))
+}
+
+// ProtoMessage implements proto.Message
+func (m *mockRawMessage) ProtoMessage() {}
+
+// Marshal implements protobuf marshaling
+func (m *mockRawMessage) Marshal() ([]byte, error) {
+	return m.Data, nil
+}
+
+// Unmarshal implements protobuf unmarshaling  
+func (m *mockRawMessage) Unmarshal(data []byte) error {
+	m.Data = make([]byte, len(data))
+	copy(m.Data, data)
+	return nil
+}
+
+// Size returns the size of the message
+func (m *mockRawMessage) Size() int {
+	return len(m.Data)
+}
+
 type MockEngine struct {
 	proxyConfig   *config.ProxyConfig
 	database      *storage.Database
 	restHandler   *proxy.RESTHandler
+	grpcHandler   *proxy.GRPCHandler
+	grpcServer    *grpc.Server
 	session       *storage.Session
 	sequenceState map[string]int
 	sequenceMutex sync.RWMutex
@@ -41,35 +83,75 @@ func NewMockEngineWithBroadcaster(proxyConfig config.ProxyConfig, db *storage.Da
 	}
 
 	restHandler := proxy.NewRESTHandler([]string{}) // Use empty redact patterns for now
+	grpcHandler := proxy.NewGRPCHandler([]string{}) // Use empty redact patterns for now
+
+	var grpcServer *grpc.Server
+	if proxyConfig.Protocol == "grpc" {
+		grpcServer = grpc.NewServer(
+			grpc.MaxRecvMsgSize(64*1024*1024),       // 64MB max receive message size
+			grpc.MaxSendMsgSize(64*1024*1024),       // 64MB max send message size
+			grpc.MaxHeaderListSize(64*1024*1024),    // 64MB max header list size
+			grpc.InitialWindowSize(64*1024*1024),    // 64MB initial window
+			grpc.InitialConnWindowSize(64*1024*1024), // 64MB connection window
+			grpc.UnknownServiceHandler(func(srv interface{}, stream grpc.ServerStream) error {
+				return handleGRPCMockRequest(stream, db, session, grpcHandler)
+			}),
+		)
+	}
 
 	return &MockEngine{
 		proxyConfig:   &proxyConfig,
 		database:      db,
 		restHandler:   restHandler,
+		grpcHandler:   grpcHandler,
+		grpcServer:    grpcServer,
 		session:       session,
 		sequenceState: make(map[string]int),
 		webServer:     webServer,
 	}, nil
 }
 
-
-
 func (m *MockEngine) Start() error {
+	address := "0.0.0.0:8080" // This method shouldn't be used in multi-proxy mode
+
+	if m.proxyConfig.Protocol == "grpc" {
+		return m.startGRPCMockServer(address)
+	} else {
+		return m.startHTTPMockServer(address)
+	}
+}
+
+func (m *MockEngine) startHTTPMockServer(address string) error {
 	mux := http.NewServeMux()
-	
+
 	// Register web UI routes if webServer is available
 	if webServer, ok := m.webServer.(interface{ RegisterRoutes(*http.ServeMux) }); ok {
 		webServer.RegisterRoutes(mux)
 	}
-	
+
 	// All other requests go to mock handler
 	mux.HandleFunc("/", m.handleRequest)
 
-	address := "0.0.0.0:8080" // This method shouldn't be used in multi-proxy mode
-	log.Printf("Starting mock server in %s mode on %s", m.proxyConfig.Mode, address)
+	log.Printf("Starting HTTP mock server on %s", address)
 	log.Printf("Serving mocked responses for session: %s", m.session.SessionName)
 
 	return http.ListenAndServe(address, mux)
+}
+
+func (m *MockEngine) startGRPCMockServer(address string) error {
+	if m.grpcServer == nil {
+		return fmt.Errorf("gRPC mock server not initialized")
+	}
+
+	lis, err := net.Listen("tcp", address)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", address, err)
+	}
+
+	log.Printf("Starting gRPC mock server on %s", address)
+	log.Printf("Serving mocked responses for session: %s", m.session.SessionName)
+
+	return m.grpcServer.Serve(lis)
 }
 
 // HandleRequest implements the ProxyHandler interface
@@ -86,7 +168,7 @@ func (m *MockEngine) handleRequest(w http.ResponseWriter, r *http.Request) {
 		for key, values := range r.Header {
 			requestHeaders[key] = strings.Join(values, ", ")
 		}
-		
+
 		var requestBody string
 		if r.Body != nil {
 			bodyBytes, err := io.ReadAll(r.Body)
@@ -95,7 +177,7 @@ func (m *MockEngine) handleRequest(w http.ResponseWriter, r *http.Request) {
 				r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 			}
 		}
-		
+
 		m.webServer.BroadcastRequest(r.Method, r.URL.Path, m.session.SessionName, r.RemoteAddr, "", requestHeaders, requestBody)
 	}
 
@@ -349,7 +431,14 @@ func (m *MockEngine) sendNotFoundResponse(w http.ResponseWriter) {
 }
 
 func (m *MockEngine) Stop() error {
+	if m.grpcServer != nil {
+		m.grpcServer.GracefulStop()
+	}
 	return nil
+}
+
+func (m *MockEngine) GetGRPCServer() *grpc.Server {
+	return m.grpcServer
 }
 
 func (m *MockEngine) ResetSequenceState() {
@@ -370,4 +459,69 @@ func (m *MockEngine) GetSequenceState() map[string]int {
 	}
 
 	return state
+}
+
+// handleGRPCMockRequest handles gRPC mock requests
+func handleGRPCMockRequest(stream grpc.ServerStream, db *storage.Database, session *storage.Session, grpcHandler *proxy.GRPCHandler) error {
+	fullMethodName, ok := grpc.MethodFromServerStream(stream)
+	if !ok {
+		return status.Errorf(codes.Internal, "failed to get method from stream")
+	}
+
+	log.Printf("[GRPC MOCK] %s", fullMethodName)
+
+	// Find matching gRPC interactions
+	interactions, err := db.FindMatchingInteractions(session.ID, fullMethodName, fullMethodName)
+	if err != nil {
+		log.Printf("Error finding matching gRPC interactions: %v", err)
+		return status.Errorf(codes.Internal, "failed to find matching interactions")
+	}
+
+	if len(interactions) == 0 {
+		log.Printf("No matching gRPC interactions found for %s", fullMethodName)
+		return status.Errorf(codes.NotFound, "no recorded interaction found for method %s", fullMethodName)
+	}
+
+	// For simplicity, use the first matching interaction
+	// In a more sophisticated implementation, we could add sequence support for gRPC
+	selectedInteraction := &interactions[0]
+
+	// Create a mock gRPC response
+	// Note: This is a simplified implementation
+	// In practice, we would need to handle protobuf message types dynamically
+
+	// Send response headers/metadata if present
+	if selectedInteraction.ResponseHeaders != "" {
+		var metadataMap map[string][]string
+		if err := json.Unmarshal([]byte(selectedInteraction.ResponseHeaders), &metadataMap); err == nil {
+			md := metadata.New(nil)
+			for key, values := range metadataMap {
+				md.Set(key, values...)
+			}
+			if err := stream.SendHeader(md); err != nil {
+				return err
+			}
+		}
+	}
+
+	// First, receive the request message from the client (required for unary calls)
+	var requestMsg mockRawMessage
+	if err := stream.RecvMsg(&requestMsg); err != nil {
+		log.Printf("Error receiving request message: %v", err)
+		return status.Errorf(codes.Internal, "failed to receive request: %v", err)
+	}
+
+	// Send the recorded response body if available
+	if len(selectedInteraction.ResponseBody) > 0 {
+		// Create a raw message with the recorded response data
+		responseMsg := mockRawMessage{Data: selectedInteraction.ResponseBody}
+		if err := stream.SendMsg(&responseMsg); err != nil {
+			return status.Errorf(codes.Internal, "failed to send response: %v", err)
+		}
+		log.Printf("Served gRPC mock response: %s -> %d (%d bytes)", fullMethodName, selectedInteraction.ResponseStatus, len(selectedInteraction.ResponseBody))
+	} else {
+		log.Printf("Served gRPC mock response: %s -> %d (empty response)", fullMethodName, selectedInteraction.ResponseStatus)
+	}
+
+	return nil
 }

@@ -23,13 +23,13 @@ install:
 run *args:
     go run . {{args}}
 
-# Run with default config
-run:
-    go run . --config config.yaml
-
 # Run tests
 test:
     go test ./...
+
+# Run integration tests
+integration-test:
+    ./integration_test.sh
 
 # Run tests with coverage
 test-coverage:
