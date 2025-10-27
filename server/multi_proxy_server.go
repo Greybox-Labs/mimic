@@ -7,12 +7,13 @@ import (
 	"net/http"
 	"strings"
 
-	"google.golang.org/grpc"
 	"mimic/config"
 	"mimic/mock"
 	"mimic/proxy"
 	"mimic/storage"
 	"mimic/web"
+
+	"google.golang.org/grpc"
 )
 
 type MultiProxyServer struct {
@@ -64,7 +65,7 @@ func NewMultiProxyServer(cfg *config.Config, db *storage.Database) (*MultiProxyS
 				return nil, fmt.Errorf("failed to create proxy engine for '%s': %w", name, err)
 			}
 		case "mock":
-			if mockEngine, err := mock.NewMockEngineWithBroadcaster(proxyConfig, db, webServer); err == nil {
+			if mockEngine, err := mock.NewMockEngineWithBroadcaster(proxyConfig, cfg.Mock, db, webServer); err == nil {
 				handler = mockEngine
 			} else {
 				return nil, fmt.Errorf("failed to create mock engine for '%s': %w", name, err)
@@ -188,28 +189,32 @@ func (s *MultiProxyServer) Start() error {
 	// Set up HTTP server for web UI and HTTP proxies
 	mux := http.NewServeMux()
 
-	// Register web UI routes at top level
-	s.webServer.RegisterRoutes(mux)
-
-	// Register HTTP proxy routes at /proxy/<name>/
+	// Register HTTP proxy routes FIRST (before web UI catch-all routes)
 	httpProxyCount := 0
 
 	for name, proxyHandler := range s.proxies {
-		proxyPath := fmt.Sprintf("/proxy/%s/", name)
+		// Capture the name and handler in the closure
+		proxyName := name
+		handler := proxyHandler
+
+		proxyPath := fmt.Sprintf("/proxy/%s/", proxyName)
 
 		// Regular HTTP proxy
 		mux.HandleFunc(proxyPath, func(w http.ResponseWriter, r *http.Request) {
 			// Strip the proxy path prefix and forward to the proxy handler
 			originalPath := r.URL.Path
-			r.URL.Path = strings.TrimPrefix(originalPath, fmt.Sprintf("/proxy/%s", name))
+			r.URL.Path = strings.TrimPrefix(originalPath, fmt.Sprintf("/proxy/%s", proxyName))
 			if r.URL.Path == "" {
 				r.URL.Path = "/"
 			}
-			proxyHandler.HandleRequest(w, r)
+			handler.HandleRequest(w, r)
 		})
-		log.Printf("Registered HTTP proxy '%s' at path %s", name, proxyPath)
+		log.Printf("Registered HTTP proxy '%s' at path %s", proxyName, proxyPath)
 		httpProxyCount++
 	}
+
+	// Register web UI routes at top level AFTER proxy routes
+	s.webServer.RegisterRoutes(mux)
 
 	// Add gRPC info endpoint if gRPC server exists
 	if s.grpcServer != nil {
@@ -217,7 +222,7 @@ func (s *MultiProxyServer) Start() error {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintf(w, `{
-	"message": "gRPC router server with path-based routing", 
+	"message": "gRPC router server with path-based routing",
 	"grpc_address": "%s",
 	"usage": "Connect your gRPC client to %s",
 	"example": "grpcurl -plaintext %s your.service/Method"

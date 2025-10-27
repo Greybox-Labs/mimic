@@ -35,6 +35,8 @@ type ProxyConfig struct {
 	ServicePattern string `mapstructure:"service_pattern"` // Regex pattern for service names
 	MethodPattern  string `mapstructure:"method_pattern"`  // Regex pattern for method names
 	IsDefault      bool   `mapstructure:"is_default"`      // Whether this is the default/fallback route
+	// Streaming support
+	EnableStreaming bool `mapstructure:"enable_streaming"` // Enable SSE streaming capture/replay
 }
 
 type DatabaseConfig struct {
@@ -50,9 +52,10 @@ type RecordingConfig struct {
 }
 
 type MockConfig struct {
-	MatchingStrategy string                 `mapstructure:"matching_strategy"`
-	SequenceMode     string                 `mapstructure:"sequence_mode"`
-	NotFoundResponse NotFoundResponseConfig `mapstructure:"not_found_response"`
+	MatchingStrategy       string                 `mapstructure:"matching_strategy"`
+	SequenceMode           string                 `mapstructure:"sequence_mode"`
+	NotFoundResponse       NotFoundResponseConfig `mapstructure:"not_found_response"`
+	RespectStreamingTiming bool                   `mapstructure:"respect_streaming_timing"` // Respect original timing for streaming responses
 }
 
 type NotFoundResponseConfig struct {
@@ -155,6 +158,7 @@ func setDefaults() {
 
 	viper.SetDefault("mock.matching_strategy", "exact")
 	viper.SetDefault("mock.sequence_mode", "ordered")
+	viper.SetDefault("mock.respect_streaming_timing", false)
 	viper.SetDefault("mock.not_found_response.status", 404)
 	viper.SetDefault("mock.not_found_response.body", map[string]interface{}{
 		"error": "Recording not found",
@@ -208,8 +212,9 @@ func getDefaultConfig() *Config {
 			RedactPatterns: []string{},
 		},
 		Mock: MockConfig{
-			MatchingStrategy: "exact",
-			SequenceMode:     "ordered",
+			MatchingStrategy:       "exact",
+			SequenceMode:           "ordered",
+			RespectStreamingTiming: false,
 			NotFoundResponse: NotFoundResponseConfig{
 				Status: 404,
 				Body:   map[string]interface{}{"error": "Recording not found"},

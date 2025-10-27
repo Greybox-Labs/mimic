@@ -10,8 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"mimic/storage"
+
+	"github.com/google/uuid"
 )
 
 type RESTHandler struct {
@@ -243,4 +244,108 @@ func (h *RESTHandler) CopyResponse(resp *http.Response, writer http.ResponseWrit
 	}
 
 	return nil
+}
+
+// IsStreamingResponse checks if a response is a streaming response (SSE)
+func (h *RESTHandler) IsStreamingResponse(resp *http.Response) bool {
+	contentType := resp.Header.Get("Content-Type")
+	return IsSSEResponse(contentType)
+}
+
+// CaptureStreamingResponse captures a streaming SSE response
+func (h *RESTHandler) CaptureStreamingResponse(resp *http.Response) ([]*SSEChunk, error) {
+	if resp.Body == nil {
+		return nil, fmt.Errorf("response body is nil")
+	}
+
+	reader := NewSSEStreamReader(resp.Body)
+	chunks, err := reader.ReadAllChunks()
+	if err != nil {
+		return nil, fmt.Errorf("failed to read SSE chunks: %w", err)
+	}
+
+	return chunks, nil
+}
+
+// ReplayStreamingResponse replays a streaming response to a client
+func (h *RESTHandler) ReplayStreamingResponse(writer http.ResponseWriter, chunks []*SSEChunk, respectTiming bool) error {
+	// Set SSE headers
+	writer.Header().Set("Content-Type", "text/event-stream")
+	writer.Header().Set("Cache-Control", "no-cache")
+	writer.Header().Set("Connection", "keep-alive")
+	writer.Header().Set("X-Accel-Buffering", "no")
+
+	flusher, ok := writer.(http.Flusher)
+	if !ok {
+		return fmt.Errorf("streaming not supported")
+	}
+
+	writer.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	sseWriter := NewSSEStreamWriter(writer, flusher)
+
+	for i, chunk := range chunks {
+		// Respect original timing if requested (but skip the first chunk's delta)
+		if respectTiming && i > 0 && chunk.TimeDelta > 0 {
+			time.Sleep(time.Duration(chunk.TimeDelta) * time.Millisecond)
+		}
+
+		if err := sseWriter.WriteChunk(chunk); err != nil {
+			return fmt.Errorf("failed to write chunk: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// CopyStreamingResponse copies a streaming response while capturing it
+func (h *RESTHandler) CopyStreamingResponse(resp *http.Response, writer http.ResponseWriter) ([]*SSEChunk, error) {
+	// Set SSE headers
+	for key, values := range resp.Header {
+		for _, value := range values {
+			writer.Header().Add(key, value)
+		}
+	}
+
+	writer.WriteHeader(resp.StatusCode)
+
+	flusher, ok := writer.(http.Flusher)
+	if !ok {
+		return nil, fmt.Errorf("streaming not supported")
+	}
+
+	flusher.Flush()
+
+	// Read and forward the stream directly
+	reader := NewSSEStreamReader(resp.Body)
+	var chunks []*SSEChunk
+
+	for {
+		chunk, err := reader.ReadChunk()
+		if err == io.EOF {
+			if chunk != nil {
+				chunks = append(chunks, chunk)
+				// Write the last chunk
+				if _, writeErr := writer.Write(chunk.RawData); writeErr != nil {
+					return chunks, fmt.Errorf("failed to write final chunk: %w", writeErr)
+				}
+				flusher.Flush()
+			}
+			break
+		}
+		if err != nil {
+			return chunks, fmt.Errorf("failed to read chunk: %w", err)
+		}
+
+		chunks = append(chunks, chunk)
+
+		// Forward the chunk to the client
+		if _, writeErr := writer.Write(chunk.RawData); writeErr != nil {
+			return chunks, fmt.Errorf("failed to write chunk: %w", writeErr)
+		}
+		flusher.Flush()
+	}
+
+	return chunks, nil
 }

@@ -93,16 +93,16 @@ proxies:
     target_port: 443
     protocol: "https"
     session_name: "api1-session"
-  
+
   api2:
     mode: "mock"
     protocol: "http"
     session_name: "api2-mocks"
-  
+
 database:
   path: "~/.mimic/recordings.db"
   connection_pool_size: 10
-  
+
 recording:
   session_name: "default"
   capture_headers: true
@@ -110,15 +110,16 @@ recording:
   redact_patterns:
     - "Authorization: Bearer .*"
     - "X-API-Key: .*"
-    
+
 mock:
   matching_strategy: "exact"  # exact | pattern | fuzzy
   sequence_mode: "ordered"    # ordered | random
+  respect_streaming_timing: false  # true to replay streaming chunks with original timing
   not_found_response:
     status: 404
     body:
       error: "Recording not found"
-      
+
 export:
   format: "json"
   pretty_print: true
@@ -186,7 +187,7 @@ mimic --mode mock --config config-grpc.yaml
    ```bash
    # Start mimic with gRPC proxy configuration
    mimic --config config-grpc-example.yaml
-   
+
    # Your gRPC client should connect to the gRPC proxy port (configurable grpc_port)
    # If HTTP server is on :8080, gRPC proxy will be on :9080 by default
    buf curl --schema buf.build/your/api --protocol grpc localhost:9080/your.service/Method
@@ -201,7 +202,7 @@ mimic --mode mock --config config-grpc.yaml
    ```bash
    # Import the recorded session
    mimic import --input "grpc-mocks.json" --session "test-grpc"
-   
+
    # Start mock server (gRPC mock will be available on port 9080)
    mimic --mode mock --config config-grpc-example.yaml
    ```
@@ -421,7 +422,7 @@ mimic clear --session "my-session"
   run: |
     mimic import --input ./tests/api-mocks.json --session "ci-tests"
     mimic --mode mock &
-    
+
 - name: Run Integration Tests
   run: |
     npm test
@@ -451,6 +452,7 @@ mimic clear --session "my-session"
 
 - `matching_strategy`: Request matching strategy (`exact`, `pattern`, `fuzzy`)
 - `sequence_mode`: Response selection mode (`ordered`, `random`)
+- `respect_streaming_timing`: Respect original timing for streaming responses (boolean, default: `false`)
 - `not_found_response`: Default response for unmatched requests
 
 ### Replay Settings

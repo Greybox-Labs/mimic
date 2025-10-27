@@ -11,13 +11,14 @@ import (
 	"strings"
 	"sync"
 
+	"mimic/config"
+	"mimic/proxy"
+	"mimic/storage"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"mimic/config"
-	"mimic/proxy"
-	"mimic/storage"
 )
 
 // mockRawMessage for handling raw gRPC message data in mock responses
@@ -57,6 +58,7 @@ func (m *mockRawMessage) Size() int {
 
 type MockEngine struct {
 	proxyConfig   *config.ProxyConfig
+	mockConfig    *config.MockConfig
 	database      *storage.Database
 	restHandler   *proxy.RESTHandler
 	grpcHandler   *proxy.GRPCHandler
@@ -72,11 +74,11 @@ type WebBroadcaster interface {
 	BroadcastResponse(method, endpoint, sessionName, remoteAddr, requestID string, status int, headers map[string]interface{}, body string)
 }
 
-func NewMockEngine(proxyConfig config.ProxyConfig, db *storage.Database) (*MockEngine, error) {
-	return NewMockEngineWithBroadcaster(proxyConfig, db, nil)
+func NewMockEngine(proxyConfig config.ProxyConfig, mockConfig config.MockConfig, db *storage.Database) (*MockEngine, error) {
+	return NewMockEngineWithBroadcaster(proxyConfig, mockConfig, db, nil)
 }
 
-func NewMockEngineWithBroadcaster(proxyConfig config.ProxyConfig, db *storage.Database, webServer WebBroadcaster) (*MockEngine, error) {
+func NewMockEngineWithBroadcaster(proxyConfig config.ProxyConfig, mockConfig config.MockConfig, db *storage.Database, webServer WebBroadcaster) (*MockEngine, error) {
 	session, err := db.GetOrCreateSession(proxyConfig.SessionName, "Mock session")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get or create session: %w", err)
@@ -101,6 +103,7 @@ func NewMockEngineWithBroadcaster(proxyConfig config.ProxyConfig, db *storage.Da
 
 	return &MockEngine{
 		proxyConfig:   &proxyConfig,
+		mockConfig:    &mockConfig,
 		database:      db,
 		restHandler:   restHandler,
 		grpcHandler:   grpcHandler,
@@ -395,6 +398,11 @@ func (m *MockEngine) selectRandomInteraction(interactions []storage.Interaction,
 }
 
 func (m *MockEngine) sendMockResponse(w http.ResponseWriter, interaction *storage.Interaction) error {
+	// Check if this is a streaming response
+	if interaction.IsStreaming {
+		return m.sendStreamingMockResponse(w, interaction)
+	}
+
 	var headers map[string]string
 	if interaction.ResponseHeaders != "" {
 		if err := json.Unmarshal([]byte(interaction.ResponseHeaders), &headers); err != nil {
@@ -414,6 +422,34 @@ func (m *MockEngine) sendMockResponse(w http.ResponseWriter, interaction *storag
 			return fmt.Errorf("failed to write response body: %w", err)
 		}
 	}
+
+	return nil
+}
+
+func (m *MockEngine) sendStreamingMockResponse(w http.ResponseWriter, interaction *storage.Interaction) error {
+	// Retrieve the stream chunks from the database
+	chunks, err := m.database.GetStreamChunks(interaction.ID)
+	if err != nil {
+		return fmt.Errorf("failed to get stream chunks: %w", err)
+	}
+
+	// Convert storage.StreamChunk to proxy.SSEChunk
+	sseChunks := make([]*proxy.SSEChunk, len(chunks))
+	for i, chunk := range chunks {
+		sseChunks[i] = &proxy.SSEChunk{
+			RawData:   chunk.Data,
+			Timestamp: chunk.Timestamp,
+			TimeDelta: chunk.TimeDelta,
+		}
+	}
+
+	// Replay the streaming response with timing based on config
+	if err := m.restHandler.ReplayStreamingResponse(w, sseChunks, m.mockConfig.RespectStreamingTiming); err != nil {
+		return fmt.Errorf("failed to replay streaming response: %w", err)
+	}
+
+	log.Printf("Served streaming mock response: %s %s -> %d chunks",
+		interaction.Method, interaction.Endpoint, len(chunks))
 
 	return nil
 }

@@ -68,13 +68,26 @@ func (d *Database) createTables() error {
 		timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		sequence_number INTEGER NOT NULL,
 		metadata TEXT,
+		is_streaming INTEGER DEFAULT 0,
 		FOREIGN KEY (session_id) REFERENCES sessions(id)
+	);`
+
+	streamChunksTable := `
+	CREATE TABLE IF NOT EXISTS stream_chunks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		interaction_id INTEGER NOT NULL,
+		chunk_index INTEGER NOT NULL,
+		data BLOB,
+		timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		time_delta INTEGER DEFAULT 0,
+		FOREIGN KEY (interaction_id) REFERENCES interactions(id) ON DELETE CASCADE
 	);`
 
 	indexes := []string{
 		"CREATE INDEX IF NOT EXISTS idx_endpoint_method ON interactions(endpoint, method);",
 		"CREATE INDEX IF NOT EXISTS idx_session_sequence ON interactions(session_id, sequence_number);",
 		"CREATE INDEX IF NOT EXISTS idx_request_id ON interactions(request_id);",
+		"CREATE INDEX IF NOT EXISTS idx_stream_chunks ON stream_chunks(interaction_id, chunk_index);",
 	}
 
 	if _, err := d.db.Exec(sessionsTable); err != nil {
@@ -83,6 +96,10 @@ func (d *Database) createTables() error {
 
 	if _, err := d.db.Exec(interactionsTable); err != nil {
 		return fmt.Errorf("failed to create interactions table: %w", err)
+	}
+
+	if _, err := d.db.Exec(streamChunksTable); err != nil {
+		return fmt.Errorf("failed to create stream_chunks table: %w", err)
 	}
 
 	for _, index := range indexes {
@@ -185,10 +202,10 @@ func (d *Database) RecordInteraction(interaction *Interaction) error {
 		INSERT INTO interactions (
 			session_id, request_id, protocol, method, endpoint,
 			request_headers, request_body, response_status, response_headers,
-			response_body, timestamp, sequence_number, metadata
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			response_body, timestamp, sequence_number, metadata, is_streaming
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	_, err = tx.Exec(query,
+	result, err := tx.Exec(query,
 		interaction.SessionID,
 		interaction.RequestID,
 		interaction.Protocol,
@@ -202,10 +219,18 @@ func (d *Database) RecordInteraction(interaction *Interaction) error {
 		interaction.Timestamp,
 		interaction.SequenceNumber,
 		interaction.Metadata,
+		interaction.IsStreaming,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to record interaction: %w", err)
 	}
+
+	// Get the interaction ID for potential stream chunks
+	interactionID, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("failed to get interaction ID: %w", err)
+	}
+	interaction.ID = int(interactionID)
 
 	return tx.Commit()
 }
@@ -227,7 +252,7 @@ func (d *Database) FindMatchingInteractions(sessionID int, method, endpoint stri
 	query := `
 		SELECT id, session_id, request_id, protocol, method, endpoint,
 			   request_headers, request_body, response_status, response_headers,
-			   response_body, timestamp, sequence_number, metadata
+			   response_body, timestamp, sequence_number, metadata, is_streaming
 		FROM interactions
 		WHERE session_id = ? AND method = ? AND endpoint = ?
 		ORDER BY sequence_number ASC`
@@ -256,6 +281,7 @@ func (d *Database) FindMatchingInteractions(sessionID int, method, endpoint stri
 			&interaction.Timestamp,
 			&interaction.SequenceNumber,
 			&interaction.Metadata,
+			&interaction.IsStreaming,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan interaction: %w", err)
@@ -270,7 +296,7 @@ func (d *Database) GetInteractionsBySession(sessionID int) ([]Interaction, error
 	query := `
 		SELECT id, session_id, request_id, protocol, method, endpoint,
 			   request_headers, request_body, response_status, response_headers,
-			   response_body, timestamp, sequence_number, metadata
+			   response_body, timestamp, sequence_number, metadata, is_streaming
 		FROM interactions
 		WHERE session_id = ?
 		ORDER BY sequence_number ASC`
@@ -299,6 +325,7 @@ func (d *Database) GetInteractionsBySession(sessionID int) ([]Interaction, error
 			&interaction.Timestamp,
 			&interaction.SequenceNumber,
 			&interaction.Metadata,
+			&interaction.IsStreaming,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan interaction: %w", err)
@@ -402,8 +429,8 @@ func (d *Database) ImportInteractions(sessionName string, interactions []Interac
 			INSERT INTO interactions (
 				session_id, request_id, protocol, method, endpoint,
 				request_headers, request_body, response_status, response_headers,
-				response_body, timestamp, sequence_number, metadata
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				response_body, timestamp, sequence_number, metadata, is_streaming
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 		_, err = tx.Exec(query,
 			interaction.SessionID,
@@ -419,6 +446,7 @@ func (d *Database) ImportInteractions(sessionName string, interactions []Interac
 			interaction.Timestamp,
 			interaction.SequenceNumber,
 			interaction.Metadata,
+			interaction.IsStreaming,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to import interaction: %w", err)
@@ -426,4 +454,59 @@ func (d *Database) ImportInteractions(sessionName string, interactions []Interac
 	}
 
 	return tx.Commit()
+}
+
+// RecordStreamChunk stores a single chunk of a streaming response
+func (d *Database) RecordStreamChunk(chunk *StreamChunk) error {
+	query := `
+		INSERT INTO stream_chunks (
+			interaction_id, chunk_index, data, timestamp, time_delta
+		) VALUES (?, ?, ?, ?, ?)`
+
+	_, err := d.db.Exec(query,
+		chunk.InteractionID,
+		chunk.ChunkIndex,
+		chunk.Data,
+		chunk.Timestamp,
+		chunk.TimeDelta,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to record stream chunk: %w", err)
+	}
+
+	return nil
+}
+
+// GetStreamChunks retrieves all chunks for a streaming interaction
+func (d *Database) GetStreamChunks(interactionID int) ([]StreamChunk, error) {
+	query := `
+		SELECT id, interaction_id, chunk_index, data, timestamp, time_delta
+		FROM stream_chunks
+		WHERE interaction_id = ?
+		ORDER BY chunk_index ASC`
+
+	rows, err := d.db.Query(query, interactionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stream chunks: %w", err)
+	}
+	defer rows.Close()
+
+	var chunks []StreamChunk
+	for rows.Next() {
+		var chunk StreamChunk
+		err := rows.Scan(
+			&chunk.ID,
+			&chunk.InteractionID,
+			&chunk.ChunkIndex,
+			&chunk.Data,
+			&chunk.Timestamp,
+			&chunk.TimeDelta,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan stream chunk: %w", err)
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	return chunks, nil
 }

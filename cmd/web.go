@@ -3,10 +3,12 @@ package cmd
 import (
 	"log"
 
-	"github.com/spf13/cobra"
 	"mimic/config"
+	"mimic/server"
 	"mimic/storage"
 	"mimic/web"
+
+	"github.com/spf13/cobra"
 )
 
 var webCmd = &cobra.Command{
@@ -34,8 +36,21 @@ func runWebServer() {
 	}
 	defer db.Close()
 
-	webServer := web.NewServer(cfg, db)
-	if err := webServer.Start(); err != nil {
-		log.Fatal("Web server failed:", err)
+	// If proxies are configured, use multi-proxy server
+	if len(cfg.Proxies) > 0 {
+		log.Printf("Starting multi-proxy server with %d proxy(ies)", len(cfg.Proxies))
+		multiProxyServer, err := server.NewMultiProxyServer(cfg, db)
+		if err != nil {
+			log.Fatal("Failed to create multi-proxy server:", err)
+		}
+		if err := multiProxyServer.Start(); err != nil {
+			log.Fatal("Multi-proxy server failed:", err)
+		}
+	} else {
+		// No proxies configured, just start web UI
+		webServer := web.NewServer(cfg, db)
+		if err := webServer.Start(); err != nil {
+			log.Fatal("Web server failed:", err)
+		}
 	}
 }

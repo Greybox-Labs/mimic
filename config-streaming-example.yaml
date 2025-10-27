@@ -1,0 +1,86 @@
+# Example configuration for capturing streaming SSE responses from LLM APIs
+# This configuration demonstrates how to use Mimic to capture and replay
+# streaming responses from providers like Anthropic, OpenAI, etc.
+
+mode: record  # Change to 'mock' to replay captured streams, or 'replay' to validate
+
+server:
+  listen_host: 0.0.0.0
+  listen_port: 8080
+
+# Define proxy endpoints for different LLM providers
+proxies:
+  # Anthropic Claude API
+  anthropic:
+    target_host: api.anthropic.com
+    target_port: 443
+    protocol: https
+    session_name: anthropic-streaming
+    enable_streaming: true  # Enable SSE streaming capture/replay
+
+  # OpenAI API (if needed)
+  openai:
+    target_host: api.openai.com
+    target_port: 443
+    protocol: https
+    session_name: openai-streaming
+    enable_streaming: true  # Enable SSE streaming capture/replay
+
+  # Custom LLM endpoint
+  custom:
+    target_host: localhost
+    target_port: 8000
+    protocol: http
+    session_name: custom-streaming
+    enable_streaming: true  # Enable SSE streaming capture/replay
+
+database:
+  path: ~/.mimic/streaming-recordings.db
+  connection_pool_size: 10
+
+recording:
+  session_name: default-streaming
+  capture_headers: true
+  capture_body: true
+  redact_patterns: []
+
+mock:
+  matching_strategy: exact  # Options: exact, pattern, fuzzy
+  sequence_mode: ordered
+  respect_streaming_timing: false  # true to replay streaming chunks with original timing, false for immediate
+  not_found_response:
+    status: 404
+    body:
+      error: "Recording not found"
+
+# Replay configuration (used when mode: replay)
+replay:
+  target_host: api.anthropic.com
+  target_port: 443
+  protocol: https
+  session_name: anthropic-streaming
+  matching_strategy: fuzzy  # Use 'fuzzy' for streaming to be more lenient
+  fail_fast: false
+  timeout_seconds: 120  # Longer timeout for streaming responses
+  max_concurrency: 1  # Sequential replay for streaming
+  ignore_timestamps: false
+
+export:
+  format: json
+  pretty_print: true
+  compress: false
+
+# Usage Examples:
+#
+# 1. Capture streaming responses:
+#    mimic web --config config-streaming-example.yaml
+#    Then make requests to http://localhost:8080/v1/messages with stream=true
+#
+# 2. Mock/replay captured streams:
+#    mimic web --config config-streaming-example.yaml --mode mock
+#    Make the same requests - they'll be served from the database
+#
+# 3. Validate against live API:
+#    mimic replay --config config-streaming-example.yaml
+#    This will replay all captured interactions and validate responses
+
