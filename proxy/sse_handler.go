@@ -135,7 +135,10 @@ func (r *SSEStreamReader) ReadChunk() (*SSEChunk, error) {
 				rawData := make([]byte, r.buffer.Len())
 				copy(rawData, r.buffer.Bytes())
 
-				event, _ := ParseSSEEvent(rawData)
+				event, err := ParseSSEEvent(rawData)
+				if err != nil {
+					return nil, err
+				}
 
 				return &SSEChunk{
 					RawData:   rawData,
@@ -158,7 +161,10 @@ func (r *SSEStreamReader) ReadChunk() (*SSEChunk, error) {
 			rawData := make([]byte, r.buffer.Len())
 			copy(rawData, r.buffer.Bytes())
 
-			event, _ := ParseSSEEvent(rawData)
+			event, err := ParseSSEEvent(rawData)
+			if err != nil {
+				return nil, err
+			}
 
 			return &SSEChunk{
 				RawData:   rawData,

@@ -435,19 +435,6 @@ func (r *ReplayEngine) replayStreamingInteraction(interaction *storage.Interacti
 // validateStreamingResponse validates streaming responses
 func (r *ReplayEngine) validateStreamingResponse(result *ReplayResult, expectedChunks, actualChunks int) (bool, string) {
 	switch r.config.MatchingStrategy {
-	case "exact":
-		// For exact matching, check status code, chunk count, and content
-		if result.ActualStatus != result.ExpectedStatus {
-			return false, fmt.Sprintf("status mismatch: expected %d, got %d", result.ExpectedStatus, result.ActualStatus)
-		}
-		if actualChunks != expectedChunks {
-			return false, fmt.Sprintf("chunk count mismatch: expected %d chunks, got %d chunks", expectedChunks, actualChunks)
-		}
-		if !bytes.Equal(result.ActualBody, result.ExpectedBody) {
-			return false, fmt.Sprintf("streaming content mismatch: expected %d bytes, got %d bytes", len(result.ExpectedBody), len(result.ActualBody))
-		}
-		return true, ""
-
 	case "fuzzy":
 		// For fuzzy matching, only check status code and that we got some chunks
 		if result.ActualStatus != result.ExpectedStatus {
@@ -464,9 +451,18 @@ func (r *ReplayEngine) validateStreamingResponse(result *ReplayResult, expectedC
 			return false, fmt.Sprintf("status mismatch: expected %d, got %d", result.ExpectedStatus, result.ActualStatus)
 		}
 		return true, ""
-
-	default:
-		return r.validateStreamingResponse(result, expectedChunks, actualChunks)
+	default: // Default to exact matching
+		// For exact matching, check status code, chunk count, and content
+		if result.ActualStatus != result.ExpectedStatus {
+			return false, fmt.Sprintf("status mismatch: expected %d, got %d", result.ExpectedStatus, result.ActualStatus)
+		}
+		if actualChunks != expectedChunks {
+			return false, fmt.Sprintf("chunk count mismatch: expected %d chunks, got %d chunks", expectedChunks, actualChunks)
+		}
+		if !bytes.Equal(result.ActualBody, result.ExpectedBody) {
+			return false, fmt.Sprintf("streaming content mismatch: expected %d bytes, got %d bytes", len(result.ExpectedBody), len(result.ActualBody))
+		}
+		return true, ""
 	}
 }
 

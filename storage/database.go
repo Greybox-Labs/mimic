@@ -15,6 +15,10 @@ type Database struct {
 }
 
 func NewDatabase(dbPath string) (*Database, error) {
+	if len(dbPath) == 0 {
+		return nil, fmt.Errorf("database path cannot be empty")
+	}
+
 	// Expand tilde in path
 	if dbPath[0] == '~' {
 		homeDir, err := os.UserHomeDir()
@@ -373,7 +377,12 @@ func (d *Database) ClearAllSessions() error {
 	}
 	defer tx.Rollback()
 
-	// Delete all interactions first (due to foreign key constraints)
+	// Delete all stream chunks and interactions first (due to foreign key constraints)
+	_, err = tx.Exec("DELETE FROM stream_chunks")
+	if err != nil {
+		return fmt.Errorf("failed to delete stream chunks: %w", err)
+	}
+
 	_, err = tx.Exec("DELETE FROM interactions")
 	if err != nil {
 		return fmt.Errorf("failed to delete interactions: %w", err)
@@ -399,6 +408,11 @@ func (d *Database) ClearSession(sessionName string) error {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+
+	// Delete stream chunks first (due to foreign key constraints)
+	if _, err := tx.Exec("DELETE FROM stream_chunks WHERE interaction_id IN (SELECT id FROM interactions WHERE session_id = ?)", session.ID); err != nil {
+		return fmt.Errorf("failed to delete stream chunks: %w", err)
+	}
 
 	if _, err := tx.Exec("DELETE FROM interactions WHERE session_id = ?", session.ID); err != nil {
 		return fmt.Errorf("failed to delete interactions: %w", err)
@@ -450,6 +464,83 @@ func (d *Database) ImportInteractions(sessionName string, interactions []Interac
 		)
 		if err != nil {
 			return fmt.Errorf("failed to import interaction: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+// ImportInteractionWithChunks imports a single interaction along with its stream chunks
+func (d *Database) ImportInteractionWithChunks(sessionName string, interaction Interaction, chunks []StreamChunk) error {
+	session, err := d.GetOrCreateSession(sessionName, "Imported session")
+	if err != nil {
+		return fmt.Errorf("failed to get or create session: %w", err)
+	}
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	interaction.SessionID = session.ID
+	query := `
+		INSERT INTO interactions (
+			session_id, request_id, protocol, method, endpoint,
+			request_headers, request_body, response_status, response_headers,
+			response_body, timestamp, sequence_number, metadata, is_streaming
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	result, err := tx.Exec(query,
+		interaction.SessionID,
+		interaction.RequestID,
+		interaction.Protocol,
+		interaction.Method,
+		interaction.Endpoint,
+		interaction.RequestHeaders,
+		interaction.RequestBody,
+		interaction.ResponseStatus,
+		interaction.ResponseHeaders,
+		interaction.ResponseBody,
+		interaction.Timestamp,
+		interaction.SequenceNumber,
+		interaction.Metadata,
+		interaction.IsStreaming,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to import interaction: %w", err)
+	}
+
+	// Get the newly created interaction ID
+	interactionID, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("failed to get interaction ID: %w", err)
+	}
+
+	// Import stream chunks if any
+	if len(chunks) > 0 {
+		chunkQuery := `
+			INSERT INTO stream_chunks (
+				interaction_id, chunk_index, data, timestamp, time_delta
+			) VALUES (?, ?, ?, ?, ?)`
+
+		for _, chunk := range chunks {
+			// Use chunk timestamp if provided, otherwise use current time
+			timestamp := chunk.Timestamp
+			if timestamp.IsZero() {
+				timestamp = time.Now()
+			}
+
+			_, err = tx.Exec(chunkQuery,
+				interactionID,
+				chunk.ChunkIndex,
+				chunk.Data,
+				timestamp,
+				chunk.TimeDelta,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to import stream chunk: %w", err)
+			}
 		}
 	}
 
