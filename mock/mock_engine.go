@@ -228,8 +228,11 @@ func (m *MockEngine) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := m.sendMockResponse(w, selectedInteraction); err != nil {
-		log.Printf("Error sending mock response: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		// Don't try to write error response if client disconnected (headers already sent)
+		if !strings.Contains(err.Error(), "broken pipe") && !strings.Contains(err.Error(), "connection reset") {
+			log.Printf("Error sending mock response: %v", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
 		return
 	}
 

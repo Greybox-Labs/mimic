@@ -35,10 +35,16 @@ func NewDatabase(dbPath string) (*Database, error) {
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite3", dbPath)
+	// Add WAL mode and busy timeout for better concurrency
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+
+	// Allow more concurrent connections with WAL mode
+	// WAL mode supports multiple readers and one writer simultaneously
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
 
 	database := &Database{db: db}
 	if err := database.createTables(); err != nil {

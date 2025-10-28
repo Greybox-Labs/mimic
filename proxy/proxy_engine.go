@@ -249,8 +249,13 @@ func (p *ProxyEngine) handleStreamingResponse(w http.ResponseWriter, r *http.Req
 	// Copy and capture the streaming response
 	chunks, err := p.restHandler.CopyStreamingResponse(resp, w)
 	if err != nil {
-		log.Printf("Error copying streaming response: %v", err)
-		return
+		// Check if it's a broken pipe (client disconnected)
+		if strings.Contains(err.Error(), "broken pipe") || strings.Contains(err.Error(), "connection reset") {
+			log.Printf("Client disconnected during streaming response (captured %d chunks before disconnect)", len(chunks))
+		} else {
+			log.Printf("Error copying streaming response: %v", err)
+		}
+		// Continue to save whatever chunks we captured before the error
 	}
 
 	log.Printf("Captured %d streaming chunks for %s %s", len(chunks), interaction.Method, interaction.Endpoint)

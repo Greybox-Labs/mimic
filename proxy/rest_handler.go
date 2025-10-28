@@ -292,6 +292,10 @@ func (h *RESTHandler) ReplayStreamingResponse(writer http.ResponseWriter, chunks
 		}
 
 		if err := sseWriter.WriteChunk(chunk); err != nil {
+			// Client disconnected - this is normal, not an error
+			if strings.Contains(err.Error(), "broken pipe") || strings.Contains(err.Error(), "connection reset") {
+				return nil
+			}
 			return fmt.Errorf("failed to write chunk: %w", err)
 		}
 	}
