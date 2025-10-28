@@ -56,6 +56,7 @@ type MockConfig struct {
 	SequenceMode           string                 `mapstructure:"sequence_mode"`
 	NotFoundResponse       NotFoundResponseConfig `mapstructure:"not_found_response"`
 	RespectStreamingTiming bool                   `mapstructure:"respect_streaming_timing"` // Respect original timing for streaming responses
+	FuzzyIgnoreFields      []string               `mapstructure:"fuzzy_ignore_fields"`      // Field names to ignore during fuzzy matching
 }
 
 type NotFoundResponseConfig struct {
@@ -268,6 +269,13 @@ func (c *Config) Validate() error {
 
 	if len(c.Proxies) == 0 {
 		return fmt.Errorf("at least one proxy must be configured")
+	}
+
+	// Validate mock matching strategy
+	if c.Mock.MatchingStrategy != "" && c.Mock.MatchingStrategy != "exact" &&
+		c.Mock.MatchingStrategy != "pattern" && c.Mock.MatchingStrategy != "fuzzy" &&
+		c.Mock.MatchingStrategy != "fuzzy-unordered" {
+		return fmt.Errorf("invalid mock matching strategy: %s (must be 'exact', 'pattern', 'fuzzy', or 'fuzzy-unordered')", c.Mock.MatchingStrategy)
 	}
 
 	// Validate proxy configs
