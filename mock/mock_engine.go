@@ -284,6 +284,16 @@ func (m *MockEngine) matchesHeaders(recordedHeaders string, requestHeaders http.
 		current[key] = strings.Join(values, ", ")
 	}
 
+	// When fuzzy matching is enabled, ignore dynamic headers
+	if m.mockConfig.MatchingStrategy == "fuzzy" || m.mockConfig.MatchingStrategy == "fuzzy-unordered" {
+		// Headers that change based on dynamic content should be ignored
+		dynamicHeaders := []string{"Content-Length", "Content-Md5", "Date", "If-None-Match", "If-Modified-Since"}
+		for _, header := range dynamicHeaders {
+			delete(recorded, header)
+			delete(current, header)
+		}
+	}
+
 	// Apply redaction to both for comparison
 	recordedJSON, _ := json.Marshal(recorded)
 	currentJSON, _ := json.Marshal(current)
