@@ -255,7 +255,8 @@ func (p *ProxyEngine) handleStreamingResponse(w http.ResponseWriter, r *http.Req
 
 	log.Printf("Captured %d streaming chunks for %s %s", len(chunks), interaction.Method, interaction.Endpoint)
 
-	// Store the chunks in the database
+	// Store the chunks in the database and track failures
+	var failedChunks []int
 	for i, chunk := range chunks {
 		streamChunk := &storage.StreamChunk{
 			InteractionID: interaction.ID,
@@ -267,6 +268,15 @@ func (p *ProxyEngine) handleStreamingResponse(w http.ResponseWriter, r *http.Req
 
 		if err := p.database.RecordStreamChunk(streamChunk); err != nil {
 			log.Printf("Error recording stream chunk %d: %v", i, err)
+			failedChunks = append(failedChunks, i)
+		}
+	}
+
+	// If any chunks failed to record, update the interaction metadata to mark it as partial
+	if len(failedChunks) > 0 {
+		log.Printf("Warning: %d/%d chunks failed to record for interaction %d", len(failedChunks), len(chunks), interaction.ID)
+		if err := p.database.MarkInteractionAsPartial(interaction.ID, failedChunks); err != nil {
+			log.Printf("Error marking interaction as partial: %v", err)
 		}
 	}
 

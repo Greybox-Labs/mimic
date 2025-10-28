@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -600,4 +601,27 @@ func (d *Database) GetStreamChunks(interactionID int) ([]StreamChunk, error) {
 	}
 
 	return chunks, nil
+}
+
+// MarkInteractionAsPartial updates an interaction's metadata to indicate that
+// some chunks failed to record, leaving the interaction in a partial state.
+func (d *Database) MarkInteractionAsPartial(interactionID int, failedChunks []int) error {
+	// Build metadata struct and marshal to JSON
+	metadata := map[string]interface{}{
+		"status":        "partial",
+		"failed_chunks": failedChunks,
+	}
+
+	metadataBytes, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+
+	query := `UPDATE interactions SET metadata = ? WHERE id = ?`
+	_, err = d.db.Exec(query, string(metadataBytes), interactionID)
+	if err != nil {
+		return fmt.Errorf("failed to mark interaction as partial: %w", err)
+	}
+
+	return nil
 }

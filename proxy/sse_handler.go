@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -66,7 +67,8 @@ func ParseSSEEvent(data []byte) (*SSEEvent, error) {
 		case "id":
 			event.ID = value
 		case "retry":
-			fmt.Sscanf(value, "%d", &event.Retry)
+			// Default to 0 if conversion fails
+			event.Retry, _ = strconv.Atoi(value)
 		}
 	}
 

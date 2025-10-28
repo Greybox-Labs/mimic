@@ -394,23 +394,54 @@ func (r *ReplayEngine) replayStreamingInteraction(interaction *storage.Interacti
 		return result
 	}
 
-	// Read streaming chunks
+	// Read streaming chunks with timeout protection using goroutine
 	reader := proxy.NewSSEStreamReader(resp.Body)
-	for {
-		chunk, err := reader.ReadChunk()
-		if err == io.EOF {
-			if chunk != nil {
-				actualChunks = append(actualChunks, chunk.RawData)
+	readTimeout := time.Duration(r.config.TimeoutSeconds) * time.Second
+
+	type readResult struct {
+		chunk *proxy.SSEChunk
+		err   error
+	}
+
+	resultChan := make(chan readResult)
+
+	// Read chunks in a goroutine
+	go func() {
+		for {
+			chunk, err := reader.ReadChunk()
+			resultChan <- readResult{chunk: chunk, err: err}
+			if err != nil {
+				close(resultChan)
+				return
 			}
-			break
 		}
-		if err != nil {
-			result.Error = fmt.Errorf("failed to read stream chunk: %w", err)
+	}()
+
+	// Read with timeout
+	for {
+		select {
+		case res := <-resultChan:
+			if res.err == io.EOF {
+				if res.chunk != nil {
+					actualChunks = append(actualChunks, res.chunk.RawData)
+				}
+				goto done
+			}
+			if res.err != nil {
+				result.Error = fmt.Errorf("failed to read stream chunk: %w", res.err)
+				result.ResponseTime = time.Since(startTime)
+				return result
+			}
+			actualChunks = append(actualChunks, res.chunk.RawData)
+
+		case <-time.After(readTimeout):
+			result.Error = fmt.Errorf("streaming read timeout after %v", readTimeout)
 			result.ResponseTime = time.Since(startTime)
 			return result
 		}
-		actualChunks = append(actualChunks, chunk.RawData)
 	}
+
+done:
 
 	result.ResponseTime = time.Since(startTime)
 
