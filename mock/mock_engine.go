@@ -300,8 +300,194 @@ func (m *MockEngine) matchesBody(recordedBody []byte, r *http.Request) bool {
 		r.Body = io.NopCloser(bytes.NewBuffer(currentBody))
 	}
 
-	// Compare bodies
+	// Use fuzzy matching if configured
+	if m.mockConfig.MatchingStrategy == "fuzzy" {
+		return m.fuzzyMatchBody(recordedBody, currentBody)
+	}
+
+	// Default to exact comparison
 	return bytes.Equal(recordedBody, currentBody)
+}
+
+func (m *MockEngine) fuzzyMatchBody(recordedBody, currentBody []byte) bool {
+	// If both are empty, they match
+	if len(recordedBody) == 0 && len(currentBody) == 0 {
+		return true
+	}
+
+	// Try to parse as JSON for structural comparison
+	var recordedJSON, currentJSON map[string]interface{}
+	recordedErr := json.Unmarshal(recordedBody, &recordedJSON)
+	currentErr := json.Unmarshal(currentBody, &currentJSON)
+
+	// If both are valid JSON, do fuzzy JSON matching
+	if recordedErr == nil && currentErr == nil {
+		return m.fuzzyMatchJSON(recordedJSON, currentJSON)
+	}
+
+	// Fall back to exact matching for non-JSON bodies
+	return bytes.Equal(recordedBody, currentBody)
+}
+
+func (m *MockEngine) fuzzyMatchJSON(recorded, current map[string]interface{}) bool {
+	// For LLM API requests, we want to match on structure but ignore dynamic content
+	// This is especially important for tool/function responses that contain timestamps,
+	// web search results, and other volatile data
+
+	// Match on key structural elements
+	structuralKeys := []string{"systemInstruction", "tools", "generationConfig", "toolConfig"}
+	for _, key := range structuralKeys {
+		if !m.fuzzyMatchJSONValue(recorded[key], current[key], false) {
+			return false
+		}
+	}
+
+	// For contents array, we need special handling
+	recordedContents, recOk := recorded["contents"].([]interface{})
+	currentContents, curOk := current["contents"].([]interface{})
+
+	if recOk != curOk {
+		return false
+	}
+
+	if recOk && curOk {
+		if len(recordedContents) != len(currentContents) {
+			return false
+		}
+
+		for i := range recordedContents {
+			if !m.fuzzyMatchContent(recordedContents[i], currentContents[i]) {
+				return false
+			}
+		}
+	}
+
+	return true
+}
+
+func (m *MockEngine) fuzzyMatchContent(recorded, current interface{}) bool {
+	recMap, recOk := recorded.(map[string]interface{})
+	curMap, curOk := current.(map[string]interface{})
+
+	if recOk != curOk {
+		return false
+	}
+
+	if !recOk {
+		return true
+	}
+
+	// Match role
+	if recMap["role"] != curMap["role"] {
+		return false
+	}
+
+	// For parts, we need to handle function calls vs function responses differently
+	recParts, recOk := recMap["parts"].([]interface{})
+	curParts, curOk := curMap["parts"].([]interface{})
+
+	if recOk != curOk {
+		return false
+	}
+
+	if !recOk {
+		return true
+	}
+
+	if len(recParts) != len(curParts) {
+		return false
+	}
+
+	for i := range recParts {
+		if !m.fuzzyMatchPart(recParts[i], curParts[i]) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (m *MockEngine) fuzzyMatchPart(recorded, current interface{}) bool {
+	recMap, recOk := recorded.(map[string]interface{})
+	curMap, curOk := current.(map[string]interface{})
+
+	if recOk != curOk {
+		return false
+	}
+
+	if !recOk {
+		return true
+	}
+
+	// If this is a function response, only match on the name, not the result
+	// (web search results and other tool outputs are dynamic)
+	if recFuncResp, ok := recMap["functionResponse"].(map[string]interface{}); ok {
+		curFuncResp, ok := curMap["functionResponse"].(map[string]interface{})
+		if !ok {
+			return false
+		}
+		// Only match function name, ignore response content
+		return recFuncResp["name"] == curFuncResp["name"]
+	}
+
+	// For function calls and text, do exact matching
+	return m.fuzzyMatchJSONValue(recMap, curMap, false)
+}
+
+func (m *MockEngine) fuzzyMatchJSONValue(recorded, current interface{}, ignoreValues bool) bool {
+	// Handle nil cases
+	if recorded == nil && current == nil {
+		return true
+	}
+	if recorded == nil || current == nil {
+		return false
+	}
+
+	switch recVal := recorded.(type) {
+	case map[string]interface{}:
+		curMap, ok := current.(map[string]interface{})
+		if !ok {
+			return false
+		}
+
+		// Check if both maps have the same keys
+		if len(recVal) != len(curMap) {
+			return false
+		}
+
+		for key, recValue := range recVal {
+			curValue, exists := curMap[key]
+			if !exists {
+				return false
+			}
+			if !m.fuzzyMatchJSONValue(recValue, curValue, ignoreValues) {
+				return false
+			}
+		}
+		return true
+
+	case []interface{}:
+		curSlice, ok := current.([]interface{})
+		if !ok {
+			return false
+		}
+		if len(recVal) != len(curSlice) {
+			return false
+		}
+		for i := range recVal {
+			if !m.fuzzyMatchJSONValue(recVal[i], curSlice[i], ignoreValues) {
+				return false
+			}
+		}
+		return true
+
+	default:
+		// For primitive values, do exact comparison unless we're ignoring values
+		if ignoreValues {
+			return true
+		}
+		return fmt.Sprintf("%v", recorded) == fmt.Sprintf("%v", current)
+	}
 }
 
 func (m *MockEngine) redactSensitiveData(data string) string {
