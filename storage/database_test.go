@@ -1,17 +1,15 @@
 package storage
 
 import (
-	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
 
 func setupTestDB(t *testing.T) (*Database, func()) {
-	// Create a temporary database file
-	dbPath := "/tmp/mimic_test.db"
-
-	// Remove any existing test database
-	os.Remove(dbPath)
+	// Create a temporary database file in a temporary directory
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "mimic_test.db")
 
 	db, err := NewDatabase(dbPath)
 	if err != nil {
@@ -20,7 +18,7 @@ func setupTestDB(t *testing.T) (*Database, func()) {
 
 	cleanup := func() {
 		db.Close()
-		os.Remove(dbPath)
+		// t.TempDir() will automatically clean up the directory
 	}
 
 	return db, cleanup

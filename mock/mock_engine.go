@@ -352,13 +352,6 @@ func (m *MockEngine) fuzzyMatchBody(recordedBody, currentBody []byte) bool {
 	return bytes.Equal(recordedBody, currentBody)
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func (m *MockEngine) fuzzyMatchJSON(recorded, current map[string]interface{}) bool {
 	// Use general fuzzy matching for the entire JSON structure
 	// UUID normalization will handle all dynamic values automatically

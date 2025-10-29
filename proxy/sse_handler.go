@@ -68,7 +68,11 @@ func ParseSSEEvent(data []byte) (*SSEEvent, error) {
 			event.ID = value
 		case "retry":
 			// Default to 0 if conversion fails
-			event.Retry, _ = strconv.Atoi(value)
+			retry, err := strconv.Atoi(value)
+			if err != nil {
+				fmt.Println("Error converting retry to int, using 0 as default")
+			}
+			event.Retry = retry
 		}
 	}
 
