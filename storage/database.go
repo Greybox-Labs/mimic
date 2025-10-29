@@ -554,22 +554,46 @@ func (d *Database) ImportInteractionWithChunks(sessionName string, interaction I
 	return tx.Commit()
 }
 
-// RecordStreamChunk stores a single chunk of a streaming response
-func (d *Database) RecordStreamChunk(chunk *StreamChunk) error {
+// RecordStreamChunks stores multiple chunks of a streaming response atomically within a transaction.
+// This ensures all-or-nothing semantics: either all chunks succeed or none are persisted.
+// This is the preferred method for recording streaming data to prevent partial data corruption.
+func (d *Database) RecordStreamChunks(chunks []*StreamChunk) error {
+	if len(chunks) == 0 {
+		return nil
+	}
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	query := `
 		INSERT INTO stream_chunks (
 			interaction_id, chunk_index, data, timestamp, time_delta
 		) VALUES (?, ?, ?, ?, ?)`
 
-	_, err := d.db.Exec(query,
-		chunk.InteractionID,
-		chunk.ChunkIndex,
-		chunk.Data,
-		chunk.Timestamp,
-		chunk.TimeDelta,
-	)
+	stmt, err := tx.Prepare(query)
 	if err != nil {
-		return fmt.Errorf("failed to record stream chunk: %w", err)
+		return fmt.Errorf("failed to prepare statement: %w", err)
+	}
+	defer stmt.Close()
+
+	for i, chunk := range chunks {
+		_, err := stmt.Exec(
+			chunk.InteractionID,
+			chunk.ChunkIndex,
+			chunk.Data,
+			chunk.Timestamp,
+			chunk.TimeDelta,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to record stream chunk %d: %w", i, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return nil

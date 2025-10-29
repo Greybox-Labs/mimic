@@ -260,27 +260,23 @@ func (p *ProxyEngine) handleStreamingResponse(w http.ResponseWriter, r *http.Req
 
 	log.Printf("Captured %d streaming chunks for %s %s", len(chunks), interaction.Method, interaction.Endpoint)
 
-	// Store the chunks in the database and track failures
-	var failedChunks []int
+	// Store all chunks atomically in a single transaction
+	streamChunks := make([]*storage.StreamChunk, len(chunks))
 	for i, chunk := range chunks {
-		streamChunk := &storage.StreamChunk{
+		streamChunks[i] = &storage.StreamChunk{
 			InteractionID: interaction.ID,
 			ChunkIndex:    i,
 			Data:          chunk.RawData,
 			Timestamp:     chunk.Timestamp,
 			TimeDelta:     chunk.TimeDelta,
 		}
-
-		if err := p.database.RecordStreamChunk(streamChunk); err != nil {
-			log.Printf("Error recording stream chunk %d: %v", i, err)
-			failedChunks = append(failedChunks, i)
-		}
 	}
 
-	// If any chunks failed to record, update the interaction metadata to mark it as partial
-	if len(failedChunks) > 0 {
-		log.Printf("Warning: %d/%d chunks failed to record for interaction %d", len(failedChunks), len(chunks), interaction.ID)
-		if err := p.database.MarkInteractionAsPartial(interaction.ID, failedChunks); err != nil {
+	// Use transactional batch insertion to ensure atomicity
+	if err := p.database.RecordStreamChunks(streamChunks); err != nil {
+		log.Printf("Error recording stream chunks atomically: %v", err)
+		// Mark interaction as failed since no chunks were persisted
+		if err := p.database.MarkInteractionAsPartial(interaction.ID, []int{}); err != nil {
 			log.Printf("Error marking interaction as partial: %v", err)
 		}
 	}

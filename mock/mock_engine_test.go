@@ -19,7 +19,8 @@ func createMockRequest(body []byte) *http.Request {
 
 func TestFuzzyMatchBody_FunctionResponses(t *testing.T) {
 	mockConfig := &config.MockConfig{
-		MatchingStrategy: "fuzzy",
+		MatchingStrategy:  "fuzzy",
+		FuzzyIgnoreFields: []string{"response"},
 	}
 
 	mockEngine := &MockEngine{
@@ -144,7 +145,8 @@ func TestFuzzyMatchBody_FunctionResponses(t *testing.T) {
 
 func TestFuzzyMatchBody_MultipleFunctionResponses(t *testing.T) {
 	mockConfig := &config.MockConfig{
-		MatchingStrategy: "fuzzy",
+		MatchingStrategy:  "fuzzy",
+		FuzzyIgnoreFields: []string{"response"},
 	}
 
 	mockEngine := &MockEngine{
