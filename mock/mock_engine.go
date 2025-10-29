@@ -256,17 +256,14 @@ func (m *MockEngine) filterMatchingInteractions(interactions []storage.Interacti
 func (m *MockEngine) matchesRequestContent(interaction storage.Interaction, r *http.Request) bool {
 	// Compare headers (ignoring redacted fields)
 	if !m.matchesHeaders(interaction.RequestHeaders, r.Header) {
-		log.Printf("[DEBUG] Headers don't match for sequence %d", interaction.SequenceNumber)
 		return false
 	}
 
 	// Compare body
 	if !m.matchesBody(interaction.RequestBody, r) {
-		log.Printf("[DEBUG] Body doesn't match for sequence %d", interaction.SequenceNumber)
 		return false
 	}
 
-	log.Printf("[DEBUG] Match found for sequence %d", interaction.SequenceNumber)
 	return true
 }
 
@@ -348,16 +345,7 @@ func (m *MockEngine) fuzzyMatchBody(recordedBody, currentBody []byte) bool {
 
 	// If both are valid JSON, do fuzzy JSON matching
 	if recordedErr == nil && currentErr == nil {
-		result := m.fuzzyMatchJSON(recordedJSON, currentJSON)
-		if !result {
-			log.Printf("[DEBUG] Fuzzy JSON match failed")
-			// Log a sample of what didn't match
-			recJSON, _ := json.Marshal(recordedJSON)
-			curJSON, _ := json.Marshal(currentJSON)
-			log.Printf("[DEBUG] Recorded body sample: %s", string(recJSON[:min(200, len(recJSON))]))
-			log.Printf("[DEBUG] Current body sample: %s", string(curJSON[:min(200, len(curJSON))]))
-		}
-		return result
+		return m.fuzzyMatchJSON(recordedJSON, currentJSON)
 	}
 
 	// Fall back to exact matching for non-JSON bodies
@@ -381,12 +369,7 @@ func (m *MockEngine) fuzzyMatchJSON(recorded, current map[string]interface{}) bo
 }
 
 func (m *MockEngine) fuzzyMatchJSONValueWithPath(recorded, current interface{}, ignoreValues bool, unordered bool, path string) bool {
-	result := m.fuzzyMatchJSONValue(recorded, current, ignoreValues, unordered)
-	if !result && path == "root" {
-		// Only log at root level to avoid too much noise
-		log.Printf("[DEBUG] Mismatch at path: %s", path)
-	}
-	return result
+	return m.fuzzyMatchJSONValue(recorded, current, ignoreValues, unordered)
 }
 
 // isUUID checks if a string matches the UUID format
@@ -424,7 +407,7 @@ func (m *MockEngine) fuzzyMatchArrayUnordered(recorded, current []interface{}, i
 	matched := make([]bool, len(current))
 
 	// For each recorded element, find a matching current element
-	for i, recElem := range recorded {
+	for _, recElem := range recorded {
 		found := false
 		for j, curElem := range current {
 			// Skip already matched elements
@@ -439,7 +422,6 @@ func (m *MockEngine) fuzzyMatchArrayUnordered(recorded, current []interface{}, i
 			}
 		}
 		if !found {
-			log.Printf("[DEBUG] Unordered array: no match found for recorded element at index %d", i)
 			return false
 		}
 	}
@@ -453,7 +435,6 @@ func (m *MockEngine) fuzzyMatchJSONValue(recorded, current interface{}, ignoreVa
 		return true
 	}
 	if recorded == nil || current == nil {
-		log.Printf("[DEBUG] Nil mismatch: recorded=%v, current=%v", recorded == nil, current == nil)
 		return false
 	}
 
@@ -461,50 +442,26 @@ func (m *MockEngine) fuzzyMatchJSONValue(recorded, current interface{}, ignoreVa
 	case map[string]interface{}:
 		curMap, ok := current.(map[string]interface{})
 		if !ok {
-			log.Printf("[DEBUG] Type mismatch: expected map, got %T", current)
 			return false
 		}
 
 		// Check if both maps have the same keys
 		if len(recVal) != len(curMap) {
-			log.Printf("[DEBUG] Map length mismatch: recorded=%d, current=%d", len(recVal), len(curMap))
-			// Log which keys are different
-			recKeys := make(map[string]bool)
-			for k := range recVal {
-				recKeys[k] = true
-			}
-			curKeys := make(map[string]bool)
-			for k := range curMap {
-				curKeys[k] = true
-			}
-			for k := range recKeys {
-				if !curKeys[k] {
-					log.Printf("[DEBUG] Missing key in current: %s", k)
-				}
-			}
-			for k := range curKeys {
-				if !recKeys[k] {
-					log.Printf("[DEBUG] Extra key in current: %s", k)
-				}
-			}
 			return false
 		}
 
 		for key, recValue := range recVal {
 			curValue, exists := curMap[key]
 			if !exists {
-				log.Printf("[DEBUG] Key missing in current: %s", key)
 				return false
 			}
 
 			// Check if this field should be ignored during fuzzy matching
 			if m.shouldIgnoreField(key) {
-				log.Printf("[DEBUG] Ignoring field: %s (configured to be ignored)", key)
 				continue
 			}
 
 			if !m.fuzzyMatchJSONValue(recValue, curValue, ignoreValues, unordered) {
-				log.Printf("[DEBUG] Value mismatch at key: %s", key)
 				return false
 			}
 		}
@@ -513,11 +470,9 @@ func (m *MockEngine) fuzzyMatchJSONValue(recorded, current interface{}, ignoreVa
 	case []interface{}:
 		curSlice, ok := current.([]interface{})
 		if !ok {
-			log.Printf("[DEBUG] Type mismatch: expected array, got %T", current)
 			return false
 		}
 		if len(recVal) != len(curSlice) {
-			log.Printf("[DEBUG] Array length mismatch: recorded=%d, current=%d", len(recVal), len(curSlice))
 			return false
 		}
 
@@ -529,7 +484,6 @@ func (m *MockEngine) fuzzyMatchJSONValue(recorded, current interface{}, ignoreVa
 		// Default: ordered matching
 		for i := range recVal {
 			if !m.fuzzyMatchJSONValue(recVal[i], curSlice[i], ignoreValues, unordered) {
-				log.Printf("[DEBUG] Array element mismatch at index %d", i)
 				return false
 			}
 		}
@@ -539,7 +493,6 @@ func (m *MockEngine) fuzzyMatchJSONValue(recorded, current interface{}, ignoreVa
 		// Handle string comparison with UUID normalization
 		curStr, ok := current.(string)
 		if !ok {
-			log.Printf("[DEBUG] Type mismatch: expected string, got %T", current)
 			return false
 		}
 		if ignoreValues {
@@ -548,25 +501,14 @@ func (m *MockEngine) fuzzyMatchJSONValue(recorded, current interface{}, ignoreVa
 		// Normalize UUIDs before comparison
 		normalizedRec := normalizeStringValue(recVal)
 		normalizedCur := normalizeStringValue(curStr)
-		if normalizedRec != normalizedCur {
-			log.Printf("[DEBUG] String mismatch: recorded='%s' (normalized='%s'), current='%s' (normalized='%s')",
-				recVal[:min(50, len(recVal))], normalizedRec[:min(50, len(normalizedRec))],
-				curStr[:min(50, len(curStr))], normalizedCur[:min(50, len(normalizedCur))])
-			return false
-		}
-		return true
+		return normalizedRec == normalizedCur
 
 	default:
 		// For other primitive values (numbers, bools, etc.), do exact comparison
 		if ignoreValues {
 			return true
 		}
-		match := fmt.Sprintf("%v", recorded) == fmt.Sprintf("%v", current)
-		if !match {
-			log.Printf("[DEBUG] Primitive mismatch: recorded=%v (type=%T), current=%v (type=%T)",
-				recorded, recorded, current, current)
-		}
-		return match
+		return fmt.Sprintf("%v", recorded) == fmt.Sprintf("%v", current)
 	}
 }
 
@@ -818,12 +760,9 @@ func handleGRPCMockRequest(stream grpc.ServerStream, db *storage.Database, sessi
 
 	// Broadcast request event to web UI
 	if webServer != nil {
-		log.Printf("[DEBUG] Broadcasting gRPC mock request to web UI: %s", fullMethodName)
 		headers := make(map[string]interface{})
 		body := fmt.Sprintf("gRPC mock request (%d bytes)", len(requestMsg.Data))
 		webServer.BroadcastRequest(fullMethodName, fullMethodName, session.SessionName, "grpc-mock-client", requestID, headers, body)
-	} else {
-		log.Printf("[DEBUG] No webServer available for broadcasting gRPC mock request")
 	}
 
 	// Send the recorded response body if available
@@ -840,12 +779,9 @@ func handleGRPCMockRequest(stream grpc.ServerStream, db *storage.Database, sessi
 
 	// Broadcast response event to web UI
 	if webServer != nil {
-		log.Printf("[DEBUG] Broadcasting gRPC mock response to web UI: %s", fullMethodName)
 		responseHeaders := make(map[string]interface{})
 		responseBody := fmt.Sprintf("gRPC mock response (%d bytes)", len(selectedInteraction.ResponseBody))
 		webServer.BroadcastResponse(fullMethodName, fullMethodName, session.SessionName, "grpc-mock-client", requestID, selectedInteraction.ResponseStatus, responseHeaders, responseBody)
-	} else {
-		log.Printf("[DEBUG] No webServer available for broadcasting gRPC mock response")
 	}
 
 	return nil
