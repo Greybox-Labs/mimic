@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -70,7 +71,7 @@ func ParseSSEEvent(data []byte) (*SSEEvent, error) {
 			// Default to 0 if conversion fails
 			retry, err := strconv.Atoi(value)
 			if err != nil {
-				fmt.Println("Error converting retry to int, using 0 as default")
+				log.Printf("Error converting retry to int, using 0 as default")
 			}
 			event.Retry = retry
 		}

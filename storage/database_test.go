@@ -2,6 +2,7 @@ package storage
 
 import (
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -92,7 +93,7 @@ func TestRecordStreamChunksTransactional(t *testing.T) {
 
 	// Verify chunk data
 	for i, chunk := range retrievedChunks {
-		expectedData := []byte("chunk " + string(rune('0'+i)))
+		expectedData := []byte("chunk " + strconv.Itoa(i))
 		if string(chunk.Data) != string(expectedData) {
 			t.Errorf("Chunk %d: expected data %s, got %s", i, expectedData, chunk.Data)
 		}
@@ -216,7 +217,7 @@ func TestConcurrentStreamChunkRecording(t *testing.T) {
 	for i := 0; i < numStreams; i++ {
 		interaction := &Interaction{
 			SessionID:      session.ID,
-			RequestID:      "test-request-" + string(rune('A'+i)),
+			RequestID:      "test-request-" + strconv.Itoa(i),
 			Protocol:       "REST",
 			Method:         "GET",
 			Endpoint:       "/api/stream",
@@ -240,14 +241,14 @@ func TestConcurrentStreamChunkRecording(t *testing.T) {
 				{
 					InteractionID: interactions[idx].ID,
 					ChunkIndex:    0,
-					Data:          []byte("stream " + string(rune('A'+idx)) + " chunk 0"),
+					Data:          []byte("stream " + strconv.Itoa(idx) + " chunk 0"),
 					Timestamp:     time.Now(),
 					TimeDelta:     0,
 				},
 				{
 					InteractionID: interactions[idx].ID,
 					ChunkIndex:    1,
-					Data:          []byte("stream " + string(rune('A'+idx)) + " chunk 1"),
+					Data:          []byte("stream " + strconv.Itoa(idx) + " chunk 1"),
 					Timestamp:     time.Now(),
 					TimeDelta:     100,
 				},
