@@ -295,6 +295,12 @@ func (m *MockEngine) matchesHeaders(recordedHeaders string, requestHeaders http.
 			delete(recorded, header)
 			delete(current, header)
 		}
+
+		// Also ignore headers specified in fuzzy_ignore_fields configuration
+		for _, header := range m.mockConfig.FuzzyIgnoreFields {
+			delete(recorded, header)
+			delete(current, header)
+		}
 	}
 
 	// Apply redaction to both for comparison

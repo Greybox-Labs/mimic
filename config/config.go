@@ -56,7 +56,7 @@ type MockConfig struct {
 	SequenceMode           string                 `mapstructure:"sequence_mode"`
 	NotFoundResponse       NotFoundResponseConfig `mapstructure:"not_found_response"`
 	RespectStreamingTiming bool                   `mapstructure:"respect_streaming_timing"` // Respect original timing for streaming responses
-	FuzzyIgnoreFields      []string               `mapstructure:"fuzzy_ignore_fields"`      // Field names to ignore during fuzzy matching
+	FuzzyIgnoreFields      []string               `mapstructure:"fuzzy_ignore_fields"`      // Field/header names to ignore during fuzzy matching
 }
 
 type NotFoundResponseConfig struct {

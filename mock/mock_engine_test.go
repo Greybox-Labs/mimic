@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"mimic/config"
+	"mimic/proxy"
 )
 
 // Helper function to create a mock HTTP request with a body
@@ -288,5 +289,115 @@ func TestFuzzyMatchBody_NonJSON(t *testing.T) {
 
 	if mockEngine.fuzzyMatchBody(body1, body3) {
 		t.Error("Expected fuzzy match to fail for different non-JSON bodies")
+	}
+}
+
+func TestMatchesHeaders_FuzzyIgnoreFields(t *testing.T) {
+	tests := []struct {
+		name          string
+		matchStrategy string
+		ignoreFields  []string
+		recordedHdrs  map[string]string
+		requestHdrs   http.Header
+		expectedMatch bool
+	}{
+		{
+			name:          "Exact match ignores fuzzy_ignore_fields",
+			matchStrategy: "exact",
+			ignoreFields:  []string{"X-Request-Id"},
+			recordedHdrs: map[string]string{
+				"Content-Type": "application/json",
+				"X-Request-Id": "recorded-id-123",
+			},
+			requestHdrs: http.Header{
+				"Content-Type": []string{"application/json"},
+				"X-Request-Id": []string{"different-id-456"},
+			},
+			expectedMatch: false, // Exact mode doesn't ignore fields
+		},
+		{
+			name:          "Fuzzy match ignores configured header fields",
+			matchStrategy: "fuzzy",
+			ignoreFields:  []string{"X-Request-Id", "X-Trace-Id"},
+			recordedHdrs: map[string]string{
+				"Content-Type": "application/json",
+				"X-Request-Id": "recorded-id-123",
+				"X-Trace-Id":   "trace-abc",
+			},
+			requestHdrs: http.Header{
+				"Content-Type": []string{"application/json"},
+				"X-Request-Id": []string{"different-id-456"},
+				"X-Trace-Id":   []string{"trace-xyz"},
+			},
+			expectedMatch: true, // Should match because ignored fields differ
+		},
+		{
+			name:          "Fuzzy match fails when non-ignored headers differ",
+			matchStrategy: "fuzzy",
+			ignoreFields:  []string{"X-Request-Id"},
+			recordedHdrs: map[string]string{
+				"Content-Type": "application/json",
+				"X-Request-Id": "recorded-id-123",
+			},
+			requestHdrs: http.Header{
+				"Content-Type": []string{"text/plain"},
+				"X-Request-Id": []string{"different-id-456"},
+			},
+			expectedMatch: false, // Should fail because Content-Type differs
+		},
+		{
+			name:          "Fuzzy match with empty ignore list and dynamic headers",
+			matchStrategy: "fuzzy",
+			ignoreFields:  []string{},
+			recordedHdrs: map[string]string{
+				"Content-Type":   "application/json",
+				"Content-Length": "123",
+				"Date":           "Mon, 01 Jan 2024 00:00:00 GMT",
+			},
+			requestHdrs: http.Header{
+				"Content-Type":   []string{"application/json"},
+				"Content-Length": []string{"456"},                           // Different but ignored (dynamic)
+				"Date":           []string{"Tue, 02 Jan 2024 00:00:00 GMT"}, // Different but ignored (dynamic)
+			},
+			expectedMatch: true, // Should match because dynamic headers are ignored
+		},
+		{
+			name:          "Fuzzy unordered also respects fuzzy_ignore_fields",
+			matchStrategy: "fuzzy-unordered",
+			ignoreFields:  []string{"X-Request-Id"},
+			recordedHdrs: map[string]string{
+				"Content-Type": "application/json",
+				"X-Request-Id": "id-1",
+			},
+			requestHdrs: http.Header{
+				"Content-Type": []string{"application/json"},
+				"X-Request-Id": []string{"id-2"},
+			},
+			expectedMatch: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockConfig := &config.MockConfig{
+				MatchingStrategy:  tt.matchStrategy,
+				FuzzyIgnoreFields: tt.ignoreFields,
+			}
+
+			// Create a minimal RESTHandler with empty redact patterns
+			restHandler := proxy.NewRESTHandler([]string{})
+
+			mockEngine := &MockEngine{
+				mockConfig:  mockConfig,
+				restHandler: restHandler,
+			}
+
+			recordedJSON, _ := json.Marshal(tt.recordedHdrs)
+			result := mockEngine.matchesHeaders(string(recordedJSON), tt.requestHdrs)
+
+			if result != tt.expectedMatch {
+				t.Errorf("Expected match=%v, got match=%v", tt.expectedMatch, result)
+			}
+		})
 	}
 }
