@@ -33,8 +33,10 @@ recording:
     - "X-Api-Key: .*"
 
 mock:
-  matching_strategy: "exact" # exact | pattern | fuzzy
+  matching_strategy: "exact" # exact | pattern | fuzzy | fuzzy-unordered
   sequence_mode: "ordered" # ordered | random
+  respect_streaming_timing: false # true to replay streaming chunks with original timing, false for immediate
+  fuzzy_ignore_fields: [] # Field/header names to ignore during fuzzy matching (e.g., ["timestamp", "X-Request-Id"])
   not_found_response:
     status: 404
     body:

@@ -34,6 +34,12 @@ recording:
 mock:
   matching_strategy: "exact"
   sequence_mode: "ordered"
+  respect_streaming_timing: false  # true to replay streaming chunks with original timing, false for immediate
+  fuzzy_ignore_fields:  # Field/header names to ignore during fuzzy matching
+    - "timestamp"
+    - "request_id"
+    - "X-Request-Id"
+    - "X-Trace-Id"
   not_found_response:
     status: 404
     body:

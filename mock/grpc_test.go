@@ -21,8 +21,15 @@ func TestMockEngineWithGRPC(t *testing.T) {
 		SessionName: "test-session",
 	}
 
+	// Create mock config
+	mockConfig := config.MockConfig{
+		MatchingStrategy:       "exact",
+		SequenceMode:           "ordered",
+		RespectStreamingTiming: false,
+	}
+
 	// Create mock engine
-	engine, err := NewMockEngine(proxyConfig, db)
+	engine, err := NewMockEngine(proxyConfig, mockConfig, db)
 	if err != nil {
 		t.Fatalf("Failed to create mock engine: %v", err)
 	}
@@ -52,8 +59,15 @@ func TestMockEngineWithHTTP(t *testing.T) {
 		SessionName: "test-session",
 	}
 
+	// Create mock config
+	mockConfig := config.MockConfig{
+		MatchingStrategy:       "exact",
+		SequenceMode:           "ordered",
+		RespectStreamingTiming: false,
+	}
+
 	// Create mock engine
-	engine, err := NewMockEngine(proxyConfig, db)
+	engine, err := NewMockEngine(proxyConfig, mockConfig, db)
 	if err != nil {
 		t.Fatalf("Failed to create mock engine: %v", err)
 	}

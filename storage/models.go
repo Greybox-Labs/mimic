@@ -26,6 +26,17 @@ type Interaction struct {
 	Timestamp       time.Time `json:"timestamp"`
 	SequenceNumber  int       `json:"sequence_number"`
 	Metadata        string    `json:"metadata"`
+	IsStreaming     bool      `json:"is_streaming"`
+}
+
+// StreamChunk represents a single chunk of a streaming response
+type StreamChunk struct {
+	ID            int       `json:"id"`
+	InteractionID int       `json:"interaction_id"`
+	ChunkIndex    int       `json:"chunk_index"`
+	Data          []byte    `json:"data"`
+	Timestamp     time.Time `json:"timestamp"`
+	TimeDelta     int64     `json:"time_delta"` // Milliseconds since previous chunk
 }
 
 type InteractionRequest struct {
@@ -45,6 +56,12 @@ type ExportData struct {
 	Interactions []ExportInteraction `json:"interactions"`
 }
 
+type ExportStreamChunk struct {
+	ChunkIndex int    `json:"chunk_index"`
+	Data       string `json:"data"`
+	TimeDelta  int64  `json:"time_delta"` // Milliseconds since previous chunk
+}
+
 type ExportInteraction struct {
 	RequestID      string              `json:"request_id"`
 	Protocol       string              `json:"protocol"`
@@ -54,4 +71,6 @@ type ExportInteraction struct {
 	Response       InteractionResponse `json:"response"`
 	Timestamp      time.Time           `json:"timestamp"`
 	SequenceNumber int                 `json:"sequence_number"`
+	IsStreaming    bool                `json:"is_streaming,omitempty"`
+	StreamChunks   []ExportStreamChunk `json:"stream_chunks,omitempty"`
 }

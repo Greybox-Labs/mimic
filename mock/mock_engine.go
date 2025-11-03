@@ -8,17 +8,22 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
+
+	"mimic/config"
+	"mimic/proxy"
+	"mimic/storage"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
-	"mimic/config"
-	"mimic/proxy"
-	"mimic/storage"
 )
+
+// UUID pattern for fuzzy matching - matches standard UUID format
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // mockRawMessage for handling raw gRPC message data in mock responses
 type mockRawMessage struct {
@@ -57,6 +62,7 @@ func (m *mockRawMessage) Size() int {
 
 type MockEngine struct {
 	proxyConfig   *config.ProxyConfig
+	mockConfig    *config.MockConfig
 	database      *storage.Database
 	restHandler   *proxy.RESTHandler
 	grpcHandler   *proxy.GRPCHandler
@@ -72,11 +78,11 @@ type WebBroadcaster interface {
 	BroadcastResponse(method, endpoint, sessionName, remoteAddr, requestID string, status int, headers map[string]interface{}, body string)
 }
 
-func NewMockEngine(proxyConfig config.ProxyConfig, db *storage.Database) (*MockEngine, error) {
-	return NewMockEngineWithBroadcaster(proxyConfig, db, nil)
+func NewMockEngine(proxyConfig config.ProxyConfig, mockConfig config.MockConfig, db *storage.Database) (*MockEngine, error) {
+	return NewMockEngineWithBroadcaster(proxyConfig, mockConfig, db, nil)
 }
 
-func NewMockEngineWithBroadcaster(proxyConfig config.ProxyConfig, db *storage.Database, webServer WebBroadcaster) (*MockEngine, error) {
+func NewMockEngineWithBroadcaster(proxyConfig config.ProxyConfig, mockConfig config.MockConfig, db *storage.Database, webServer WebBroadcaster) (*MockEngine, error) {
 	session, err := db.GetOrCreateSession(proxyConfig.SessionName, "Mock session")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get or create session: %w", err)
@@ -101,6 +107,7 @@ func NewMockEngineWithBroadcaster(proxyConfig config.ProxyConfig, db *storage.Da
 
 	return &MockEngine{
 		proxyConfig:   &proxyConfig,
+		mockConfig:    &mockConfig,
 		database:      db,
 		restHandler:   restHandler,
 		grpcHandler:   grpcHandler,
@@ -221,8 +228,11 @@ func (m *MockEngine) handleRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := m.sendMockResponse(w, selectedInteraction); err != nil {
-		log.Printf("Error sending mock response: %v", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		// Don't try to write error response if client disconnected (headers already sent)
+		if !strings.Contains(err.Error(), "broken pipe") && !strings.Contains(err.Error(), "connection reset") {
+			log.Printf("Error sending mock response: %v", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -274,6 +284,22 @@ func (m *MockEngine) matchesHeaders(recordedHeaders string, requestHeaders http.
 		current[key] = strings.Join(values, ", ")
 	}
 
+	// When fuzzy matching is enabled, ignore dynamic headers
+	if m.mockConfig.MatchingStrategy == "fuzzy" || m.mockConfig.MatchingStrategy == "fuzzy-unordered" {
+		// Headers that change based on dynamic content should be ignored
+		dynamicHeaders := []string{"Content-Length", "Content-Md5", "Date", "If-None-Match", "If-Modified-Since"}
+		for _, header := range dynamicHeaders {
+			delete(recorded, header)
+			delete(current, header)
+		}
+
+		// Also ignore headers specified in fuzzy_ignore_fields configuration
+		for _, header := range m.mockConfig.FuzzyIgnoreFields {
+			delete(recorded, header)
+			delete(current, header)
+		}
+	}
+
 	// Apply redaction to both for comparison
 	recordedJSON, _ := json.Marshal(recorded)
 	currentJSON, _ := json.Marshal(current)
@@ -297,8 +323,186 @@ func (m *MockEngine) matchesBody(recordedBody []byte, r *http.Request) bool {
 		r.Body = io.NopCloser(bytes.NewBuffer(currentBody))
 	}
 
-	// Compare bodies
+	// Use fuzzy matching if configured
+	if m.mockConfig.MatchingStrategy == "fuzzy" || m.mockConfig.MatchingStrategy == "fuzzy-unordered" {
+		return m.fuzzyMatchBody(recordedBody, currentBody)
+	}
+
+	// Default to exact comparison
 	return bytes.Equal(recordedBody, currentBody)
+}
+
+func (m *MockEngine) fuzzyMatchBody(recordedBody, currentBody []byte) bool {
+	// If both are empty, they match
+	if len(recordedBody) == 0 && len(currentBody) == 0 {
+		return true
+	}
+
+	// Try to parse as JSON for structural comparison
+	var recordedJSON, currentJSON map[string]interface{}
+	recordedErr := json.Unmarshal(recordedBody, &recordedJSON)
+	currentErr := json.Unmarshal(currentBody, &currentJSON)
+
+	// If both are valid JSON, do fuzzy JSON matching
+	if recordedErr == nil && currentErr == nil {
+		return m.fuzzyMatchJSON(recordedJSON, currentJSON)
+	}
+
+	// Fall back to exact matching for non-JSON bodies
+	return bytes.Equal(recordedBody, currentBody)
+}
+
+func (m *MockEngine) fuzzyMatchJSON(recorded, current map[string]interface{}) bool {
+	// Use general fuzzy matching for the entire JSON structure
+	// UUID normalization will handle all dynamic values automatically
+	// Check if we should use unordered array matching
+	unordered := m.mockConfig.MatchingStrategy == "fuzzy-unordered"
+	result := m.fuzzyMatchJSONValueWithPath(recorded, current, false, unordered, "root")
+	return result
+}
+
+func (m *MockEngine) fuzzyMatchJSONValueWithPath(recorded, current interface{}, ignoreValues bool, unordered bool, path string) bool {
+	return m.fuzzyMatchJSONValue(recorded, current, ignoreValues, unordered)
+}
+
+// isUUID checks if a string matches the UUID format
+func isUUID(s string) bool {
+	return uuidPattern.MatchString(s)
+}
+
+// normalizeStringValue replaces UUIDs with a placeholder for comparison
+func normalizeStringValue(s string) string {
+	if isUUID(s) {
+		return "UUID_PLACEHOLDER"
+	}
+	return s
+}
+
+// shouldIgnoreField checks if a field should be ignored during fuzzy matching
+func (m *MockEngine) shouldIgnoreField(fieldName string) bool {
+	// Only apply ignore rules if fuzzy matching is enabled
+	if m.mockConfig.MatchingStrategy != "fuzzy" && m.mockConfig.MatchingStrategy != "fuzzy-unordered" {
+		return false
+	}
+
+	for _, ignoredField := range m.mockConfig.FuzzyIgnoreFields {
+		if fieldName == ignoredField {
+			return true
+		}
+	}
+	return false
+}
+
+// fuzzyMatchArrayUnordered matches array elements in any order
+// Each element in recorded must match exactly one element in current
+func (m *MockEngine) fuzzyMatchArrayUnordered(recorded, current []interface{}, ignoreValues bool, unordered bool) bool {
+	// Track which current elements have been matched
+	matched := make([]bool, len(current))
+
+	// For each recorded element, find a matching current element
+	for _, recElem := range recorded {
+		found := false
+		for j, curElem := range current {
+			// Skip already matched elements
+			if matched[j] {
+				continue
+			}
+			// Try to match this pair
+			if m.fuzzyMatchJSONValue(recElem, curElem, ignoreValues, unordered) {
+				matched[j] = true
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (m *MockEngine) fuzzyMatchJSONValue(recorded, current interface{}, ignoreValues bool, unordered bool) bool {
+	// Handle nil cases
+	if recorded == nil && current == nil {
+		return true
+	}
+	if recorded == nil || current == nil {
+		return false
+	}
+
+	switch recVal := recorded.(type) {
+	case map[string]interface{}:
+		curMap, ok := current.(map[string]interface{})
+		if !ok {
+			return false
+		}
+
+		// Check if both maps have the same keys
+		if len(recVal) != len(curMap) {
+			return false
+		}
+
+		for key, recValue := range recVal {
+			curValue, exists := curMap[key]
+			if !exists {
+				return false
+			}
+
+			// Check if this field should be ignored during fuzzy matching
+			if m.shouldIgnoreField(key) {
+				continue
+			}
+
+			if !m.fuzzyMatchJSONValue(recValue, curValue, ignoreValues, unordered) {
+				return false
+			}
+		}
+		return true
+
+	case []interface{}:
+		curSlice, ok := current.([]interface{})
+		if !ok {
+			return false
+		}
+		if len(recVal) != len(curSlice) {
+			return false
+		}
+
+		// If unordered matching is enabled, try to match elements in any order
+		if unordered {
+			return m.fuzzyMatchArrayUnordered(recVal, curSlice, ignoreValues, unordered)
+		}
+
+		// Default: ordered matching
+		for i := range recVal {
+			if !m.fuzzyMatchJSONValue(recVal[i], curSlice[i], ignoreValues, unordered) {
+				return false
+			}
+		}
+		return true
+
+	case string:
+		// Handle string comparison with UUID normalization
+		curStr, ok := current.(string)
+		if !ok {
+			return false
+		}
+		if ignoreValues {
+			return true
+		}
+		// Normalize UUIDs before comparison
+		normalizedRec := normalizeStringValue(recVal)
+		normalizedCur := normalizeStringValue(curStr)
+		return normalizedRec == normalizedCur
+
+	default:
+		// For other primitive values (numbers, bools, etc.), do exact comparison
+		if ignoreValues {
+			return true
+		}
+		return fmt.Sprintf("%v", recorded) == fmt.Sprintf("%v", current)
+	}
 }
 
 func (m *MockEngine) redactSensitiveData(data string) string {
@@ -395,6 +599,11 @@ func (m *MockEngine) selectRandomInteraction(interactions []storage.Interaction,
 }
 
 func (m *MockEngine) sendMockResponse(w http.ResponseWriter, interaction *storage.Interaction) error {
+	// Check if this is a streaming response
+	if interaction.IsStreaming {
+		return m.sendStreamingMockResponse(w, interaction)
+	}
+
 	var headers map[string]string
 	if interaction.ResponseHeaders != "" {
 		if err := json.Unmarshal([]byte(interaction.ResponseHeaders), &headers); err != nil {
@@ -414,6 +623,34 @@ func (m *MockEngine) sendMockResponse(w http.ResponseWriter, interaction *storag
 			return fmt.Errorf("failed to write response body: %w", err)
 		}
 	}
+
+	return nil
+}
+
+func (m *MockEngine) sendStreamingMockResponse(w http.ResponseWriter, interaction *storage.Interaction) error {
+	// Retrieve the stream chunks from the database
+	chunks, err := m.database.GetStreamChunks(interaction.ID)
+	if err != nil {
+		return fmt.Errorf("failed to get stream chunks: %w", err)
+	}
+
+	// Convert storage.StreamChunk to proxy.SSEChunk
+	sseChunks := make([]*proxy.SSEChunk, len(chunks))
+	for i, chunk := range chunks {
+		sseChunks[i] = &proxy.SSEChunk{
+			RawData:   chunk.Data,
+			Timestamp: chunk.Timestamp,
+			TimeDelta: chunk.TimeDelta,
+		}
+	}
+
+	// Replay the streaming response with timing based on config
+	if err := m.restHandler.ReplayStreamingResponse(w, sseChunks, m.mockConfig.RespectStreamingTiming); err != nil {
+		return fmt.Errorf("failed to replay streaming response: %w", err)
+	}
+
+	log.Printf("Served streaming mock response: %s %s -> %d chunks",
+		interaction.Method, interaction.Endpoint, len(chunks))
 
 	return nil
 }
@@ -516,12 +753,9 @@ func handleGRPCMockRequest(stream grpc.ServerStream, db *storage.Database, sessi
 
 	// Broadcast request event to web UI
 	if webServer != nil {
-		log.Printf("[DEBUG] Broadcasting gRPC mock request to web UI: %s", fullMethodName)
 		headers := make(map[string]interface{})
 		body := fmt.Sprintf("gRPC mock request (%d bytes)", len(requestMsg.Data))
 		webServer.BroadcastRequest(fullMethodName, fullMethodName, session.SessionName, "grpc-mock-client", requestID, headers, body)
-	} else {
-		log.Printf("[DEBUG] No webServer available for broadcasting gRPC mock request")
 	}
 
 	// Send the recorded response body if available
@@ -538,12 +772,9 @@ func handleGRPCMockRequest(stream grpc.ServerStream, db *storage.Database, sessi
 
 	// Broadcast response event to web UI
 	if webServer != nil {
-		log.Printf("[DEBUG] Broadcasting gRPC mock response to web UI: %s", fullMethodName)
 		responseHeaders := make(map[string]interface{})
 		responseBody := fmt.Sprintf("gRPC mock response (%d bytes)", len(selectedInteraction.ResponseBody))
 		webServer.BroadcastResponse(fullMethodName, fullMethodName, session.SessionName, "grpc-mock-client", requestID, selectedInteraction.ResponseStatus, responseHeaders, responseBody)
-	} else {
-		log.Printf("[DEBUG] No webServer available for broadcasting gRPC mock response")
 	}
 
 	return nil

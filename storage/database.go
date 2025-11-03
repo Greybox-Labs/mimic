@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,10 @@ type Database struct {
 }
 
 func NewDatabase(dbPath string) (*Database, error) {
+	if len(dbPath) == 0 {
+		return nil, fmt.Errorf("database path cannot be empty")
+	}
+
 	// Expand tilde in path
 	if dbPath[0] == '~' {
 		homeDir, err := os.UserHomeDir()
@@ -30,10 +35,16 @@ func NewDatabase(dbPath string) (*Database, error) {
 		return nil, fmt.Errorf("failed to create database directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite3", dbPath)
+	// Add WAL mode and busy timeout for better concurrency
+	db, err := sql.Open("sqlite3", dbPath+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+
+	// Allow more concurrent connections with WAL mode
+	// WAL mode supports multiple readers and one writer simultaneously
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
 
 	database := &Database{db: db}
 	if err := database.createTables(); err != nil {
@@ -68,13 +79,26 @@ func (d *Database) createTables() error {
 		timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 		sequence_number INTEGER NOT NULL,
 		metadata TEXT,
+		is_streaming INTEGER DEFAULT 0,
 		FOREIGN KEY (session_id) REFERENCES sessions(id)
+	);`
+
+	streamChunksTable := `
+	CREATE TABLE IF NOT EXISTS stream_chunks (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		interaction_id INTEGER NOT NULL,
+		chunk_index INTEGER NOT NULL,
+		data BLOB,
+		timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		time_delta INTEGER DEFAULT 0,
+		FOREIGN KEY (interaction_id) REFERENCES interactions(id) ON DELETE CASCADE
 	);`
 
 	indexes := []string{
 		"CREATE INDEX IF NOT EXISTS idx_endpoint_method ON interactions(endpoint, method);",
 		"CREATE INDEX IF NOT EXISTS idx_session_sequence ON interactions(session_id, sequence_number);",
 		"CREATE INDEX IF NOT EXISTS idx_request_id ON interactions(request_id);",
+		"CREATE INDEX IF NOT EXISTS idx_stream_chunks ON stream_chunks(interaction_id, chunk_index);",
 	}
 
 	if _, err := d.db.Exec(sessionsTable); err != nil {
@@ -83,6 +107,10 @@ func (d *Database) createTables() error {
 
 	if _, err := d.db.Exec(interactionsTable); err != nil {
 		return fmt.Errorf("failed to create interactions table: %w", err)
+	}
+
+	if _, err := d.db.Exec(streamChunksTable); err != nil {
+		return fmt.Errorf("failed to create stream_chunks table: %w", err)
 	}
 
 	for _, index := range indexes {
@@ -185,10 +213,10 @@ func (d *Database) RecordInteraction(interaction *Interaction) error {
 		INSERT INTO interactions (
 			session_id, request_id, protocol, method, endpoint,
 			request_headers, request_body, response_status, response_headers,
-			response_body, timestamp, sequence_number, metadata
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+			response_body, timestamp, sequence_number, metadata, is_streaming
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	_, err = tx.Exec(query,
+	result, err := tx.Exec(query,
 		interaction.SessionID,
 		interaction.RequestID,
 		interaction.Protocol,
@@ -202,10 +230,18 @@ func (d *Database) RecordInteraction(interaction *Interaction) error {
 		interaction.Timestamp,
 		interaction.SequenceNumber,
 		interaction.Metadata,
+		interaction.IsStreaming,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to record interaction: %w", err)
 	}
+
+	// Get the interaction ID for potential stream chunks
+	interactionID, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("failed to get interaction ID: %w", err)
+	}
+	interaction.ID = int(interactionID)
 
 	return tx.Commit()
 }
@@ -227,7 +263,7 @@ func (d *Database) FindMatchingInteractions(sessionID int, method, endpoint stri
 	query := `
 		SELECT id, session_id, request_id, protocol, method, endpoint,
 			   request_headers, request_body, response_status, response_headers,
-			   response_body, timestamp, sequence_number, metadata
+			   response_body, timestamp, sequence_number, metadata, is_streaming
 		FROM interactions
 		WHERE session_id = ? AND method = ? AND endpoint = ?
 		ORDER BY sequence_number ASC`
@@ -256,6 +292,7 @@ func (d *Database) FindMatchingInteractions(sessionID int, method, endpoint stri
 			&interaction.Timestamp,
 			&interaction.SequenceNumber,
 			&interaction.Metadata,
+			&interaction.IsStreaming,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan interaction: %w", err)
@@ -270,7 +307,7 @@ func (d *Database) GetInteractionsBySession(sessionID int) ([]Interaction, error
 	query := `
 		SELECT id, session_id, request_id, protocol, method, endpoint,
 			   request_headers, request_body, response_status, response_headers,
-			   response_body, timestamp, sequence_number, metadata
+			   response_body, timestamp, sequence_number, metadata, is_streaming
 		FROM interactions
 		WHERE session_id = ?
 		ORDER BY sequence_number ASC`
@@ -299,6 +336,7 @@ func (d *Database) GetInteractionsBySession(sessionID int) ([]Interaction, error
 			&interaction.Timestamp,
 			&interaction.SequenceNumber,
 			&interaction.Metadata,
+			&interaction.IsStreaming,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan interaction: %w", err)
@@ -346,7 +384,12 @@ func (d *Database) ClearAllSessions() error {
 	}
 	defer tx.Rollback()
 
-	// Delete all interactions first (due to foreign key constraints)
+	// Delete all stream chunks and interactions first (due to foreign key constraints)
+	_, err = tx.Exec("DELETE FROM stream_chunks")
+	if err != nil {
+		return fmt.Errorf("failed to delete stream chunks: %w", err)
+	}
+
 	_, err = tx.Exec("DELETE FROM interactions")
 	if err != nil {
 		return fmt.Errorf("failed to delete interactions: %w", err)
@@ -372,6 +415,11 @@ func (d *Database) ClearSession(sessionName string) error {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+
+	// Delete stream chunks first (due to foreign key constraints)
+	if _, err := tx.Exec("DELETE FROM stream_chunks WHERE interaction_id IN (SELECT id FROM interactions WHERE session_id = ?)", session.ID); err != nil {
+		return fmt.Errorf("failed to delete stream chunks: %w", err)
+	}
 
 	if _, err := tx.Exec("DELETE FROM interactions WHERE session_id = ?", session.ID); err != nil {
 		return fmt.Errorf("failed to delete interactions: %w", err)
@@ -402,8 +450,8 @@ func (d *Database) ImportInteractions(sessionName string, interactions []Interac
 			INSERT INTO interactions (
 				session_id, request_id, protocol, method, endpoint,
 				request_headers, request_body, response_status, response_headers,
-				response_body, timestamp, sequence_number, metadata
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+				response_body, timestamp, sequence_number, metadata, is_streaming
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 		_, err = tx.Exec(query,
 			interaction.SessionID,
@@ -419,6 +467,7 @@ func (d *Database) ImportInteractions(sessionName string, interactions []Interac
 			interaction.Timestamp,
 			interaction.SequenceNumber,
 			interaction.Metadata,
+			interaction.IsStreaming,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to import interaction: %w", err)
@@ -426,4 +475,183 @@ func (d *Database) ImportInteractions(sessionName string, interactions []Interac
 	}
 
 	return tx.Commit()
+}
+
+// ImportInteractionWithChunks imports a single interaction along with its stream chunks
+func (d *Database) ImportInteractionWithChunks(sessionName string, interaction Interaction, chunks []StreamChunk) error {
+	session, err := d.GetOrCreateSession(sessionName, "Imported session")
+	if err != nil {
+		return fmt.Errorf("failed to get or create session: %w", err)
+	}
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	interaction.SessionID = session.ID
+	query := `
+		INSERT INTO interactions (
+			session_id, request_id, protocol, method, endpoint,
+			request_headers, request_body, response_status, response_headers,
+			response_body, timestamp, sequence_number, metadata, is_streaming
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	result, err := tx.Exec(query,
+		interaction.SessionID,
+		interaction.RequestID,
+		interaction.Protocol,
+		interaction.Method,
+		interaction.Endpoint,
+		interaction.RequestHeaders,
+		interaction.RequestBody,
+		interaction.ResponseStatus,
+		interaction.ResponseHeaders,
+		interaction.ResponseBody,
+		interaction.Timestamp,
+		interaction.SequenceNumber,
+		interaction.Metadata,
+		interaction.IsStreaming,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to import interaction: %w", err)
+	}
+
+	// Get the newly created interaction ID
+	interactionID, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("failed to get interaction ID: %w", err)
+	}
+
+	// Import stream chunks if any
+	if len(chunks) > 0 {
+		chunkQuery := `
+			INSERT INTO stream_chunks (
+				interaction_id, chunk_index, data, timestamp, time_delta
+			) VALUES (?, ?, ?, ?, ?)`
+
+		for _, chunk := range chunks {
+			// Use chunk timestamp if provided, otherwise use current time
+			timestamp := chunk.Timestamp
+			if timestamp.IsZero() {
+				timestamp = time.Now()
+			}
+
+			_, err = tx.Exec(chunkQuery,
+				interactionID,
+				chunk.ChunkIndex,
+				chunk.Data,
+				timestamp,
+				chunk.TimeDelta,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to import stream chunk: %w", err)
+			}
+		}
+	}
+
+	return tx.Commit()
+}
+
+// RecordStreamChunks stores multiple chunks of a streaming response atomically within a transaction.
+// This ensures all-or-nothing semantics: either all chunks succeed or none are persisted.
+// This is the preferred method for recording streaming data to prevent partial data corruption.
+func (d *Database) RecordStreamChunks(chunks []*StreamChunk) error {
+	if len(chunks) == 0 {
+		return nil
+	}
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	query := `
+		INSERT INTO stream_chunks (
+			interaction_id, chunk_index, data, timestamp, time_delta
+		) VALUES (?, ?, ?, ?, ?)`
+
+	stmt, err := tx.Prepare(query)
+	if err != nil {
+		return fmt.Errorf("failed to prepare statement: %w", err)
+	}
+	defer stmt.Close()
+
+	for i, chunk := range chunks {
+		_, err := stmt.Exec(
+			chunk.InteractionID,
+			chunk.ChunkIndex,
+			chunk.Data,
+			chunk.Timestamp,
+			chunk.TimeDelta,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to record stream chunk %d: %w", i, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+// GetStreamChunks retrieves all chunks for a streaming interaction
+func (d *Database) GetStreamChunks(interactionID int) ([]StreamChunk, error) {
+	query := `
+		SELECT id, interaction_id, chunk_index, data, timestamp, time_delta
+		FROM stream_chunks
+		WHERE interaction_id = ?
+		ORDER BY chunk_index ASC`
+
+	rows, err := d.db.Query(query, interactionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stream chunks: %w", err)
+	}
+	defer rows.Close()
+
+	var chunks []StreamChunk
+	for rows.Next() {
+		var chunk StreamChunk
+		err := rows.Scan(
+			&chunk.ID,
+			&chunk.InteractionID,
+			&chunk.ChunkIndex,
+			&chunk.Data,
+			&chunk.Timestamp,
+			&chunk.TimeDelta,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan stream chunk: %w", err)
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	return chunks, nil
+}
+
+// MarkInteractionAsPartial updates an interaction's metadata to indicate that
+// some chunks failed to record, leaving the interaction in a partial state.
+func (d *Database) MarkInteractionAsPartial(interactionID int, failedChunks []int) error {
+	// Build metadata struct and marshal to JSON
+	metadata := map[string]interface{}{
+		"status":        "partial",
+		"failed_chunks": failedChunks,
+	}
+
+	metadataBytes, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+
+	query := `UPDATE interactions SET metadata = ? WHERE id = ?`
+	_, err = d.db.Exec(query, string(metadataBytes), interactionID)
+	if err != nil {
+		return fmt.Errorf("failed to mark interaction as partial: %w", err)
+	}
+
+	return nil
 }

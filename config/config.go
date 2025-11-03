@@ -35,6 +35,8 @@ type ProxyConfig struct {
 	ServicePattern string `mapstructure:"service_pattern"` // Regex pattern for service names
 	MethodPattern  string `mapstructure:"method_pattern"`  // Regex pattern for method names
 	IsDefault      bool   `mapstructure:"is_default"`      // Whether this is the default/fallback route
+	// Streaming support
+	EnableStreaming bool `mapstructure:"enable_streaming"` // Enable SSE streaming capture/replay
 }
 
 type DatabaseConfig struct {
@@ -50,9 +52,11 @@ type RecordingConfig struct {
 }
 
 type MockConfig struct {
-	MatchingStrategy string                 `mapstructure:"matching_strategy"`
-	SequenceMode     string                 `mapstructure:"sequence_mode"`
-	NotFoundResponse NotFoundResponseConfig `mapstructure:"not_found_response"`
+	MatchingStrategy       string                 `mapstructure:"matching_strategy"`
+	SequenceMode           string                 `mapstructure:"sequence_mode"`
+	NotFoundResponse       NotFoundResponseConfig `mapstructure:"not_found_response"`
+	RespectStreamingTiming bool                   `mapstructure:"respect_streaming_timing"` // Respect original timing for streaming responses
+	FuzzyIgnoreFields      []string               `mapstructure:"fuzzy_ignore_fields"`      // Field/header names to ignore during fuzzy matching
 }
 
 type NotFoundResponseConfig struct {
@@ -155,6 +159,7 @@ func setDefaults() {
 
 	viper.SetDefault("mock.matching_strategy", "exact")
 	viper.SetDefault("mock.sequence_mode", "ordered")
+	viper.SetDefault("mock.respect_streaming_timing", false)
 	viper.SetDefault("mock.not_found_response.status", 404)
 	viper.SetDefault("mock.not_found_response.body", map[string]interface{}{
 		"error": "Recording not found",
@@ -208,8 +213,9 @@ func getDefaultConfig() *Config {
 			RedactPatterns: []string{},
 		},
 		Mock: MockConfig{
-			MatchingStrategy: "exact",
-			SequenceMode:     "ordered",
+			MatchingStrategy:       "exact",
+			SequenceMode:           "ordered",
+			RespectStreamingTiming: false,
 			NotFoundResponse: NotFoundResponseConfig{
 				Status: 404,
 				Body:   map[string]interface{}{"error": "Recording not found"},
@@ -263,6 +269,13 @@ func (c *Config) Validate() error {
 
 	if len(c.Proxies) == 0 {
 		return fmt.Errorf("at least one proxy must be configured")
+	}
+
+	// Validate mock matching strategy
+	if c.Mock.MatchingStrategy != "" && c.Mock.MatchingStrategy != "exact" &&
+		c.Mock.MatchingStrategy != "pattern" && c.Mock.MatchingStrategy != "fuzzy" &&
+		c.Mock.MatchingStrategy != "fuzzy-unordered" {
+		return fmt.Errorf("invalid mock matching strategy: %s (must be 'exact', 'pattern', 'fuzzy', or 'fuzzy-unordered')", c.Mock.MatchingStrategy)
 	}
 
 	// Validate proxy configs

@@ -6,11 +6,13 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
-	"google.golang.org/grpc"
 	"mimic/config"
 	"mimic/storage"
+
+	"google.golang.org/grpc"
 )
 
 type ProxyEngine struct {
@@ -153,11 +155,17 @@ func (p *ProxyEngine) handleRequest(w http.ResponseWriter, r *http.Request) {
 		p.webServer.BroadcastRequest(interaction.Method, interaction.Endpoint, p.session.SessionName, r.RemoteAddr, interaction.RequestID, requestHeaders, body)
 	}
 
+	// Build target URL using the (possibly modified) URL path and query string
+	targetPath := r.URL.Path
+	if r.URL.RawQuery != "" {
+		targetPath += "?" + r.URL.RawQuery
+	}
+
 	targetURL := fmt.Sprintf("%s://%s:%d%s",
 		p.proxyConfig.Protocol,
 		p.proxyConfig.TargetHost,
 		p.proxyConfig.TargetPort,
-		r.URL.RequestURI())
+		targetPath)
 
 	proxyReq, err := p.restHandler.CopyRequest(r, targetURL)
 	if err != nil {
@@ -173,6 +181,13 @@ func (p *ProxyEngine) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+
+	// Check if streaming is enabled for this proxy and response is SSE
+	if p.proxyConfig.EnableStreaming && p.restHandler.IsStreamingResponse(resp) {
+		log.Printf("Streaming enabled - handling SSE response for %s %s", interaction.Method, interaction.Endpoint)
+		p.handleStreamingResponse(w, r, resp, interaction)
+		return
+	}
 
 	status, headers, body, err := p.restHandler.ExtractResponse(resp)
 	if err != nil {
@@ -201,6 +216,77 @@ func (p *ProxyEngine) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	if err := p.restHandler.CopyResponse(resp, w); err != nil {
 		log.Printf("Error copying response: %v", err)
+	}
+}
+
+func (p *ProxyEngine) handleStreamingResponse(w http.ResponseWriter, r *http.Request, resp *http.Response, interaction *storage.Interaction) {
+	// Extract response headers
+	headers := make(map[string]string)
+	for key, values := range resp.Header {
+		headers[key] = strings.Join(values, ", ")
+	}
+
+	headersJSON, err := json.Marshal(headers)
+	if err != nil {
+		log.Printf("Error marshaling response headers: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	interaction.ResponseStatus = resp.StatusCode
+	interaction.ResponseHeaders = string(headersJSON)
+	interaction.IsStreaming = true
+
+	// Record the interaction first (without response body for streaming)
+	if err := p.database.RecordInteraction(interaction); err != nil {
+		log.Printf("Error recording streaming interaction: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Recorded streaming interaction: %s %s (ID: %d)", interaction.Method, interaction.Endpoint, interaction.ID)
+
+	// Copy and capture the streaming response
+	chunks, err := p.restHandler.CopyStreamingResponse(resp, w)
+	if err != nil {
+		// Check if it's a broken pipe (client disconnected)
+		if strings.Contains(err.Error(), "broken pipe") || strings.Contains(err.Error(), "connection reset") {
+			log.Printf("Client disconnected during streaming response (captured %d chunks before disconnect)", len(chunks))
+		} else {
+			log.Printf("Error copying streaming response: %v", err)
+		}
+		// Continue to save whatever chunks we captured before the error
+	}
+
+	log.Printf("Captured %d streaming chunks for %s %s", len(chunks), interaction.Method, interaction.Endpoint)
+
+	// Store all chunks atomically in a single transaction
+	streamChunks := make([]*storage.StreamChunk, len(chunks))
+	for i, chunk := range chunks {
+		streamChunks[i] = &storage.StreamChunk{
+			InteractionID: interaction.ID,
+			ChunkIndex:    i,
+			Data:          chunk.RawData,
+			Timestamp:     chunk.Timestamp,
+			TimeDelta:     chunk.TimeDelta,
+		}
+	}
+
+	// Use transactional batch insertion to ensure atomicity
+	if err := p.database.RecordStreamChunks(streamChunks); err != nil {
+		log.Printf("Error recording stream chunks atomically: %v", err)
+		// Mark interaction as failed since no chunks were persisted
+		if err := p.database.MarkInteractionAsPartial(interaction.ID, []int{}); err != nil {
+			log.Printf("Error marking interaction as partial: %v", err)
+		}
+	}
+
+	// Broadcast streaming completion if web server is available
+	if p.webServer != nil {
+		var responseHeaders map[string]interface{}
+		json.Unmarshal([]byte(interaction.ResponseHeaders), &responseHeaders)
+		responseBody := fmt.Sprintf("[Streaming response with %d chunks]", len(chunks))
+		p.webServer.BroadcastResponse(interaction.Method, interaction.Endpoint, p.session.SessionName, r.RemoteAddr, interaction.RequestID, resp.StatusCode, responseHeaders, responseBody)
 	}
 }
 

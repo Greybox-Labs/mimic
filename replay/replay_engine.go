@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sort"
@@ -275,6 +276,11 @@ func (r *ReplayEngine) replayInteraction(interaction *storage.Interaction) *Repl
 
 // replayHTTPInteraction handles HTTP/HTTPS replay
 func (r *ReplayEngine) replayHTTPInteraction(interaction *storage.Interaction, result *ReplayResult, startTime time.Time) *ReplayResult {
+	// Check if this is a streaming interaction
+	if interaction.IsStreaming {
+		return r.replayStreamingInteraction(interaction, result, startTime)
+	}
+
 	// Construct the request URL
 	url := fmt.Sprintf("%s://%s:%d%s", r.config.Protocol, r.config.TargetHost, r.config.TargetPort, interaction.Endpoint)
 
@@ -319,6 +325,176 @@ func (r *ReplayEngine) replayHTTPInteraction(interaction *storage.Interaction, r
 	result.Success, result.ValidationError = r.validateResponse(result)
 
 	return result
+}
+
+// replayStreamingInteraction handles streaming SSE replay
+func (r *ReplayEngine) replayStreamingInteraction(interaction *storage.Interaction, result *ReplayResult, startTime time.Time) *ReplayResult {
+	// Construct the request URL
+	url := fmt.Sprintf("%s://%s:%d%s", r.config.Protocol, r.config.TargetHost, r.config.TargetPort, interaction.Endpoint)
+
+	// Create the HTTP request
+	req, err := http.NewRequest(interaction.Method, url, bytes.NewBuffer(interaction.RequestBody))
+	if err != nil {
+		result.Error = fmt.Errorf("failed to create request: %w", err)
+		return result
+	}
+
+	// Add headers from the recorded interaction
+	if interaction.RequestHeaders != "" {
+		headers := make(map[string]string)
+		if err := json.Unmarshal([]byte(interaction.RequestHeaders), &headers); err == nil {
+			for key, value := range headers {
+				req.Header.Set(key, value)
+			}
+		}
+	}
+
+	// Execute the request
+	resp, err := r.client.Do(req)
+	if err != nil {
+		result.Error = fmt.Errorf("request failed: %w", err)
+		result.ResponseTime = time.Since(startTime)
+		return result
+	}
+	defer resp.Body.Close()
+
+	result.ActualStatus = resp.StatusCode
+
+	// Retrieve the expected stream chunks from the database
+	expectedChunks, err := r.database.GetStreamChunks(interaction.ID)
+	if err != nil {
+		result.Error = fmt.Errorf("failed to get stream chunks: %w", err)
+		result.ResponseTime = time.Since(startTime)
+		return result
+	}
+
+	// Read the actual streaming response
+	actualChunks := make([][]byte, 0)
+
+	// Check if the response is actually a stream
+	contentType := resp.Header.Get("Content-Type")
+	if !proxy.IsSSEResponse(contentType) {
+		// Not a streaming response, just read it as a regular body
+		var actualBody bytes.Buffer
+		if _, err := actualBody.ReadFrom(resp.Body); err != nil {
+			result.Error = fmt.Errorf("failed to read response body: %w", err)
+			result.ResponseTime = time.Since(startTime)
+			return result
+		}
+		result.ActualBody = actualBody.Bytes()
+		result.ResponseTime = time.Since(startTime)
+
+		// Validate that we expected a streaming response
+		if len(expectedChunks) > 0 {
+			result.Success = false
+			result.ValidationError = fmt.Sprintf("expected streaming response with %d chunks, got non-streaming response", len(expectedChunks))
+		} else {
+			result.Success = true
+		}
+		return result
+	}
+
+	// Read streaming chunks with timeout protection using goroutine
+	reader := proxy.NewSSEStreamReader(resp.Body)
+	readTimeout := time.Duration(r.config.TimeoutSeconds) * time.Second
+
+	type readResult struct {
+		chunk *proxy.SSEChunk
+		err   error
+	}
+
+	resultChan := make(chan readResult)
+
+	// Read chunks in a goroutine
+	go func() {
+		for {
+			chunk, err := reader.ReadChunk()
+			resultChan <- readResult{chunk: chunk, err: err}
+			if err != nil {
+				close(resultChan)
+				return
+			}
+		}
+	}()
+
+	// Read with timeout
+	for {
+		select {
+		case res := <-resultChan:
+			if res.err == io.EOF {
+				if res.chunk != nil {
+					actualChunks = append(actualChunks, res.chunk.RawData)
+				}
+				goto done
+			}
+			if res.err != nil {
+				result.Error = fmt.Errorf("failed to read stream chunk: %w", res.err)
+				result.ResponseTime = time.Since(startTime)
+				return result
+			}
+			actualChunks = append(actualChunks, res.chunk.RawData)
+
+		case <-time.After(readTimeout):
+			result.Error = fmt.Errorf("streaming read timeout after %v", readTimeout)
+			result.ResponseTime = time.Since(startTime)
+			return result
+		}
+	}
+
+done:
+
+	result.ResponseTime = time.Since(startTime)
+
+	// Build expected and actual body for validation
+	var expectedBody, actualBody bytes.Buffer
+	for _, chunk := range expectedChunks {
+		expectedBody.Write(chunk.Data)
+	}
+	for _, chunk := range actualChunks {
+		actualBody.Write(chunk)
+	}
+
+	result.ExpectedBody = expectedBody.Bytes()
+	result.ActualBody = actualBody.Bytes()
+
+	// Validate the response
+	result.Success, result.ValidationError = r.validateStreamingResponse(result, len(expectedChunks), len(actualChunks))
+
+	return result
+}
+
+// validateStreamingResponse validates streaming responses
+func (r *ReplayEngine) validateStreamingResponse(result *ReplayResult, expectedChunks, actualChunks int) (bool, string) {
+	switch r.config.MatchingStrategy {
+	case "fuzzy":
+		// For fuzzy matching, only check status code and that we got some chunks
+		if result.ActualStatus != result.ExpectedStatus {
+			return false, fmt.Sprintf("status mismatch: expected %d, got %d", result.ExpectedStatus, result.ActualStatus)
+		}
+		if actualChunks == 0 && expectedChunks > 0 {
+			return false, "expected streaming response but got no chunks"
+		}
+		return true, ""
+
+	case "status_code":
+		// Only validate status code
+		if result.ActualStatus != result.ExpectedStatus {
+			return false, fmt.Sprintf("status mismatch: expected %d, got %d", result.ExpectedStatus, result.ActualStatus)
+		}
+		return true, ""
+	default: // Default to exact matching
+		// For exact matching, check status code, chunk count, and content
+		if result.ActualStatus != result.ExpectedStatus {
+			return false, fmt.Sprintf("status mismatch: expected %d, got %d", result.ExpectedStatus, result.ActualStatus)
+		}
+		if actualChunks != expectedChunks {
+			return false, fmt.Sprintf("chunk count mismatch: expected %d chunks, got %d chunks", expectedChunks, actualChunks)
+		}
+		if !bytes.Equal(result.ActualBody, result.ExpectedBody) {
+			return false, fmt.Sprintf("streaming content mismatch: expected %d bytes, got %d bytes", len(result.ExpectedBody), len(result.ActualBody))
+		}
+		return true, ""
+	}
 }
 
 // replayGRPCInteraction handles gRPC replay

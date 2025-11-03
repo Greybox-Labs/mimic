@@ -80,17 +80,35 @@ func (e *ExportManager) ImportSession(inputPath, sessionName, mergeStrategy stri
 		mergeStrategy = "append"
 	}
 
-	interactions := make([]storage.Interaction, len(exportData.Interactions))
+	// Import interactions one by one, handling stream chunks for streaming interactions
 	for i, exportInteraction := range exportData.Interactions {
 		interaction, err := e.convertFromExportInteraction(exportInteraction)
 		if err != nil {
 			return fmt.Errorf("failed to convert interaction %d: %w", i, err)
 		}
-		interactions[i] = interaction
-	}
 
-	if err := e.database.ImportInteractions(targetSessionName, interactions); err != nil {
-		return fmt.Errorf("failed to import interactions: %w", err)
+		// If this is a streaming interaction with chunks, use the specialized import method
+		if exportInteraction.IsStreaming && len(exportInteraction.StreamChunks) > 0 {
+			// Convert export chunks to storage chunks
+			chunks := make([]storage.StreamChunk, len(exportInteraction.StreamChunks))
+			for j, exportChunk := range exportInteraction.StreamChunks {
+				chunks[j] = storage.StreamChunk{
+					ChunkIndex: exportChunk.ChunkIndex,
+					Data:       []byte(exportChunk.Data),
+					TimeDelta:  exportChunk.TimeDelta,
+					// Timestamp will be set during import
+				}
+			}
+
+			if err := e.database.ImportInteractionWithChunks(targetSessionName, interaction, chunks); err != nil {
+				return fmt.Errorf("failed to import streaming interaction %d: %w", i, err)
+			}
+		} else {
+			// For non-streaming interactions, use the regular import
+			if err := e.database.ImportInteractions(targetSessionName, []storage.Interaction{interaction}); err != nil {
+				return fmt.Errorf("failed to import interaction %d: %w", i, err)
+			}
+		}
 	}
 
 	return nil
@@ -125,7 +143,7 @@ func (e *ExportManager) convertToExportInteraction(interaction storage.Interacti
 		}
 	}
 
-	return storage.ExportInteraction{
+	exportInteraction := storage.ExportInteraction{
 		RequestID: interaction.RequestID,
 		Protocol:  interaction.Protocol,
 		Method:    interaction.Method,
@@ -141,7 +159,28 @@ func (e *ExportManager) convertToExportInteraction(interaction storage.Interacti
 		},
 		Timestamp:      interaction.Timestamp,
 		SequenceNumber: interaction.SequenceNumber,
-	}, nil
+		IsStreaming:    interaction.IsStreaming,
+	}
+
+	// If this is a streaming interaction, fetch and include the stream chunks
+	if interaction.IsStreaming {
+		chunks, err := e.database.GetStreamChunks(interaction.ID)
+		if err != nil {
+			return storage.ExportInteraction{}, fmt.Errorf("failed to get stream chunks: %w", err)
+		}
+
+		exportChunks := make([]storage.ExportStreamChunk, len(chunks))
+		for i, chunk := range chunks {
+			exportChunks[i] = storage.ExportStreamChunk{
+				ChunkIndex: chunk.ChunkIndex,
+				Data:       string(chunk.Data),
+				TimeDelta:  chunk.TimeDelta,
+			}
+		}
+		exportInteraction.StreamChunks = exportChunks
+	}
+
+	return exportInteraction, nil
 }
 
 func (e *ExportManager) convertFromExportInteraction(exportInteraction storage.ExportInteraction) (storage.Interaction, error) {
@@ -191,6 +230,7 @@ func (e *ExportManager) convertFromExportInteraction(exportInteraction storage.E
 		ResponseBody:    responseBody,
 		Timestamp:       exportInteraction.Timestamp,
 		SequenceNumber:  exportInteraction.SequenceNumber,
+		IsStreaming:     exportInteraction.IsStreaming,
 	}, nil
 }
 

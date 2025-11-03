@@ -9,7 +9,7 @@ proxies:
     target_host: "localhost"
     target_port: 9090
     session_name: "grpc-session"
-  
+
   grpc-mock:
     mode: "mock"
     protocol: "grpc"
@@ -28,6 +28,7 @@ recording:
 mock:
   matching_strategy: "exact"
   sequence_mode: "ordered"
+  respect_streaming_timing: false  # true to replay streaming chunks with original timing, false for immediate
   not_found_response:
     status: 404
     body:
